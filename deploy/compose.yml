@@ -1,0 +1,103 @@
+# Vantage production in /data/vantage (docs/self-hosting.md). The release job copies this file
+# there on every release tag; change it here, never on the host.
+#
+#   .env              written by the release job: VANTAGE_IMAGE, VANTAGE_RUNNER_IMAGE, VANTAGE_RELEASE,
+#                     COMPOSE_FILE (nothing secret)
+#   secrets/*.env     host-only, created once by deploy/init-host.sh; each container gets
+#                     only the database password of its own role; runner.env holds the token of
+#                     Systaro's own runner and switches it on
+#   postgres/         database files
+#   storage/          uploaded test reports (owned by uid 1000, the image's bun user)
+#
+# The hub joins monitoring_default, the network of the monitoring stack on the same host: its
+# nginx-proxy and Let's Encrypt companion pick the hub up from VIRTUAL_HOST / LETSENCRYPT_HOST, and
+# the APM Elasticsearch is reachable as https://elasticsearch:9200 (its CA is part of the APM
+# integration).
+name: vantage
+
+x-app: &app
+  image: ${VANTAGE_IMAGE:?VANTAGE_IMAGE is missing; the deploy job writes it to .env}
+  restart: always
+  depends_on:
+    postgres:
+      condition: service_healthy
+  logging: &logging
+    driver: json-file
+    options:
+      max-file: "5"
+      max-size: "10m"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: always
+    env_file: secrets/postgres.env
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/10-vantage.sh:ro
+    networks: [internal]
+    healthcheck:
+      # Over TCP: during first-time init the entrypoint's temporary server listens on the socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d vantage"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging: *logging
+
+  # One-shot, run by the deploy job before hub and worker restart: docker compose run --rm migrate
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["bun", "run", "src/shared/migrate-cli.ts", "hub"]
+    env_file: [secrets/app.env, secrets/db-owner.env]
+    healthcheck:
+      disable: true
+    networks: [internal]
+    profiles: [migrate]
+
+  hub:
+    <<: *app
+    env_file: [secrets/app.env, secrets/db-hub.env]
+    environment:
+      VIRTUAL_HOST: ${VANTAGE_HOSTS:?hub and reports host names, comma-separated}
+      VIRTUAL_PORT: "7100"
+      LETSENCRYPT_HOST: ${VANTAGE_HOSTS:?hub and reports host names, comma-separated}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:?contact address for the TLS certificates}
+    volumes:
+      - ./storage:/data/storage
+    networks: [internal, monitoring]
+
+  worker:
+    <<: *app
+    command: ["bun", "run", "src/hub/worker.ts"]
+    env_file: [secrets/app.env, secrets/db-worker.env]
+    healthcheck:
+      disable: true
+    volumes:
+      - ./storage:/data/storage
+    networks: [internal, monitoring]
+
+  # Systaro's own runner (design 6.7): reads the servers we operate over SSH, with its own key on the
+  # runner-data volume. The deploy job starts it only when secrets/runner.env exists. It talks to
+  # the hub through the public URL like any runner and has no route to the database.
+  runner:
+    image: ${VANTAGE_RUNNER_IMAGE:?VANTAGE_RUNNER_IMAGE is missing; the deploy job writes it to .env}
+    restart: always
+    env_file:
+      - path: secrets/runner.env
+        required: false
+    volumes:
+      - runner-data:/data
+    networks: [runner]
+    profiles: [runner]
+    logging: *logging
+
+networks:
+  internal: {}
+  runner: {}
+  monitoring:
+    external: true
+    name: monitoring_default
+
+volumes:
+  runner-data: {}

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Fake systemctl for test/ops-agent.test.ts: two failed units, the first with the status bullet
+# column that some systemd versions print even with --plain.
+case "$*" in
+  *list-units*--state=failed*)
+    printf '%s\n' '● nginx.service loaded failed failed A high performance web server'
+    printf '%s\n' 'backup@daily.service loaded failed failed Daily backup'
+    ;;
+  *)
+    echo "fake systemctl: unexpected arguments: $*" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,12 @@
+# Dev only: a harmless playbook for trying Vantage Ops. Never touches another machine.
+- name: Ping localhost
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Ping
+      ansible.builtin.ping:
+
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: "Hallo von Vantage Ops ({{ greeting | default('ohne Extra-Vars') }})"

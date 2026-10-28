@@ -1,0 +1,5 @@
+#!/bin/sh
+# curl wrapper for test/ops-agent.test.ts: appends its argument list to $CURL_ARGV_LOG, then runs
+# the real curl ($REAL_CURL). Lets the tests prove that secrets never reach the command line.
+printf '%s\n' "$@" >>"${CURL_ARGV_LOG:?}"
+exec "${REAL_CURL:?}" "$@"

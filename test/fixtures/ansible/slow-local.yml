@@ -1,0 +1,10 @@
+# Dev only: runs for about 30 seconds on localhost, to try the live log and cancelling.
+- name: Slow localhost run
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Count
+      ansible.builtin.command: "sleep 3"
+      loop: "{{ range(1, 11) | list }}"
+      changed_when: false

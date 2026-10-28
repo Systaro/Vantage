@@ -1,0 +1,245 @@
+{
+  "config": {
+    "version": "1.50.0",
+    "rootDir": "/builds/nordwind/webshop-e2e/tests",
+    "projects": [
+      { "id": "chromium", "name": "chromium", "retries": 2 },
+      { "id": "firefox", "name": "firefox", "retries": 2 }
+    ]
+  },
+  "suites": [
+    {
+      "title": "checkout.spec.ts",
+      "file": "checkout.spec.ts",
+      "line": 0,
+      "column": 0,
+      "specs": [
+        {
+          "title": "loads the cart page",
+          "ok": true,
+          "tags": [],
+          "id": "a1",
+          "file": "checkout.spec.ts",
+          "line": 5,
+          "column": 5,
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "status": "expected",
+              "results": [
+                { "workerIndex": 0, "parallelIndex": 0, "status": "passed", "duration": 1234.6, "errors": [], "stdout": [], "stderr": [], "retry": 0, "startTime": "2026-10-01T08:00:01.000Z", "attachments": [] }
+              ]
+            },
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "firefox",
+              "projectName": "firefox",
+              "status": "expected",
+              "results": [
+                { "workerIndex": 1, "parallelIndex": 1, "status": "passed", "duration": 1500, "errors": [], "stdout": [], "stderr": [], "retry": 0, "startTime": "2026-10-01T08:00:00.500Z", "attachments": [] }
+              ]
+            }
+          ]
+        }
+      ],
+      "suites": [
+        {
+          "title": "Checkout",
+          "file": "checkout.spec.ts",
+          "line": 10,
+          "column": 6,
+          "specs": [
+            {
+              "title": "pays by invoice",
+              "ok": false,
+              "tags": [],
+              "id": "a2",
+              "file": "checkout.spec.ts",
+              "line": 12,
+              "column": 7,
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "status": "unexpected",
+                  "results": [
+                    {
+                      "workerIndex": 2, "parallelIndex": 0, "status": "failed", "duration": 5100, "retry": 0, "startTime": "2026-10-01T08:00:02.000Z",
+                      "error": { "message": "\u001b[31mError: \u001b[39mfirst attempt" },
+                      "errors": [{ "message": "\u001b[31mError: \u001b[39mfirst attempt" }],
+                      "stdout": [], "stderr": [], "attachments": []
+                    },
+                    {
+                      "workerIndex": 3, "parallelIndex": 0, "status": "failed", "duration": 5200, "retry": 1, "startTime": "2026-10-01T08:00:08.000Z",
+                      "error": { "message": "\u001b[31mError: \u001b[39msecond attempt" },
+                      "errors": [{ "message": "\u001b[31mError: \u001b[39msecond attempt" }],
+                      "stdout": [], "stderr": [], "attachments": []
+                    },
+                    {
+                      "workerIndex": 4, "parallelIndex": 0, "status": "failed", "duration": 5321.4, "retry": 2, "startTime": "2026-10-01T08:00:14.000Z",
+                      "error": {
+                        "message": "\u001b[31mError: \u001b[39m\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m()\u001b[22m failed\n\nLocator: getByRole('button', { name: 'Kostenpflichtig bestellen' })\nExpected: visible\nTimeout: 5000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 5000ms\u001b[22m\n\u001b[2m  - waiting for getByRole('button', { name: 'Kostenpflichtig bestellen' })\u001b[22m\n",
+                        "stack": "Error: expect(locator).toBeVisible() failed\n    at /builds/nordwind/webshop-e2e/tests/checkout.spec.ts:20:5"
+                      },
+                      "errors": [
+                        {
+                          "message": "\u001b[31mError: \u001b[39m\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m()\u001b[22m failed\n\nLocator: getByRole('button', { name: 'Kostenpflichtig bestellen' })\nExpected: visible\nTimeout: 5000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 5000ms\u001b[22m\n\u001b[2m  - waiting for getByRole('button', { name: 'Kostenpflichtig bestellen' })\u001b[22m\n",
+                          "location": { "file": "/builds/nordwind/webshop-e2e/tests/checkout.spec.ts", "line": 20, "column": 5 }
+                        }
+                      ],
+                      "stdout": [], "stderr": [], "attachments": [
+                        { "name": "screenshot", "contentType": "image/png", "path": "/builds/nordwind/webshop-e2e/test-results/checkout-pays-by-invoice-retry2/test-failed-1.png" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "title": "applies a voucher",
+              "ok": true,
+              "tags": ["@smoke"],
+              "id": "a3",
+              "file": "checkout.spec.ts",
+              "line": 25,
+              "column": 7,
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "status": "flaky",
+                  "results": [
+                    {
+                      "workerIndex": 5, "parallelIndex": 1, "status": "failed", "duration": 2200, "retry": 0, "startTime": "2026-10-01T08:00:03.000Z",
+                      "error": { "message": "\u001b[31mTimeoutError: \u001b[39mlocator.click: Timeout 5000ms exceeded." },
+                      "errors": [{ "message": "\u001b[31mTimeoutError: \u001b[39mlocator.click: Timeout 5000ms exceeded." }],
+                      "stdout": [], "stderr": [], "attachments": []
+                    },
+                    { "workerIndex": 6, "parallelIndex": 1, "status": "passed", "duration": 1800, "retry": 1, "startTime": "2026-10-01T08:00:06.000Z", "errors": [], "stdout": [], "stderr": [], "attachments": [] }
+                  ]
+                }
+              ]
+            }
+          ],
+          "suites": [
+            {
+              "title": "Express",
+              "file": "checkout.spec.ts",
+              "line": 30,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "only on weekdays",
+                  "ok": true,
+                  "tags": [],
+                  "id": "a4",
+                  "file": "checkout.spec.ts",
+                  "line": 31,
+                  "column": 9,
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [{ "type": "skip", "description": "weekend" }],
+                      "expectedStatus": "skipped",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "status": "skipped",
+                      "results": [
+                        { "workerIndex": 7, "parallelIndex": 2, "status": "skipped", "duration": 0, "errors": [], "stdout": [], "stderr": [], "retry": 0, "startTime": "2026-10-01T08:00:04.000Z", "attachments": [] }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "title": "times out",
+                  "ok": false,
+                  "tags": [],
+                  "id": "a5",
+                  "file": "checkout.spec.ts",
+                  "line": 40,
+                  "column": 9,
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "status": "unexpected",
+                      "results": [
+                        {
+                          "workerIndex": 8, "parallelIndex": 3, "status": "timedOut", "duration": 30001, "retry": 0, "startTime": "2026-10-01T08:00:05.000Z",
+                          "error": { "message": "Test timeout of 30000ms exceeded." },
+                          "errors": [{ "message": "Test timeout of 30000ms exceeded." }],
+                          "stdout": [], "stderr": [], "attachments": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "search.spec.ts",
+      "file": "search.spec.ts",
+      "line": 0,
+      "column": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Search",
+          "line": 3,
+          "column": 6,
+          "specs": [
+            {
+              "title": "finds by name",
+              "ok": true,
+              "tags": [],
+              "id": "b1",
+              "line": 4,
+              "column": 7,
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "status": "expected",
+                  "results": [
+                    { "workerIndex": 9, "parallelIndex": 0, "status": "passed", "duration": 640, "errors": [], "stdout": [], "stderr": [], "retry": 0, "startTime": "2026-10-01T08:00:07.000Z", "attachments": [] }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-01T08:00:00.000Z",
+    "duration": 45678.9,
+    "expected": 3,
+    "skipped": 1,
+    "unexpected": 2,
+    "flaky": 1
+  }
+}

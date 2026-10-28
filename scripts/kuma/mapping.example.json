@@ -1,0 +1,25 @@
+{
+  "actor": "admin@example.com",
+  "organisations": [
+    { "slug": "nordwind", "name": "Nordwind Handel" }
+  ],
+  "projects": [
+    { "path": "nordwind/shop", "name": "Webshop" }
+  ],
+  "environments": [
+    { "path": "nordwind/shop/prod", "name": "Production", "kind": "production", "url": "https://shop.nordwind.example" },
+    { "path": "nordwind/shop/stage", "name": "Stage", "kind": "staging", "url": "https://stage.shop.nordwind.example" }
+  ],
+  "monitors": {
+    "1": ["nordwind/shop/prod", "Frontend"],
+    "2": ["nordwind/shop/prod", "Backup"],
+    "3": ["nordwind/shop/stage", "Frontend"],
+    "4": null
+  },
+  "users": [
+    { "email": "alice@nordwind.example", "name": "Alice Nordwind", "kind": "customer", "grants": [{ "project": "nordwind/shop", "level": "overview" }] }
+  ],
+  "channels": [
+    { "name": "alice@nordwind.example", "recipients": ["alice@nordwind.example"], "enabled": false, "monitors": [1, 2] }
+  ]
+}

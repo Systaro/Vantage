@@ -1,0 +1,26 @@
+#!/bin/sh
+# Fake crontab for the --install tests: the table lives in $FAKE_CRONTAB_FILE, so the real user
+# crontab is never touched.
+f=${FAKE_CRONTAB_FILE:?FAKE_CRONTAB_FILE is not set}
+case ${1:-} in
+  -l)
+    if [ ! -f "$f" ]; then
+      echo "no crontab for $(id -un)" >&2
+      exit 1
+    fi
+    cat "$f"
+    ;;
+  -r)
+    if [ ! -f "$f" ]; then
+      echo "no crontab for $(id -un)" >&2
+      exit 1
+    fi
+    rm -f "$f"
+    ;;
+  - | '') cat >"$f" ;;
+  -*)
+    echo "fake crontab: unsupported option $1" >&2
+    exit 1
+    ;;
+  *) cat "$1" >"$f" ;;
+esac
