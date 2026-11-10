@@ -1,8 +1,8 @@
 import type { Hono } from "hono";
 import { parseId } from "../../../shared/http";
-import { Ago, Badge, Card, Empty, formatDuration, formatNumber, PageHead, StatusBanner } from "../../../shared/ui/components";
+import { Ago, Badge, Card, Empty, formatDuration, formatNumber, StatusBanner } from "../../../shared/ui/components";
 import { all, first, rls } from "../../db";
-import { HubPage, rememberProject } from "../../ui";
+import { ProjectShell, rememberProject } from "../../ui";
 import { IncidentTable } from "../alerts/routes";
 import { EnvTile, loadEnvRows, RUN_STATUS } from "./overview";
 
@@ -23,6 +23,7 @@ export function mountProject(app: Hono) {
       if (!project) return null;
       return {
         project,
+        hasIsms: !!(await first(tx`select 1 from isms_controls where project_id = ${id} limit 1`)),
         envs: await loadEnvRows(tx, id),
         incidents: await all<any>(tx`
           select i.id, i.title, i.source, i.severity, i.opened_at, i.resolved_at, i.environment_id, ev.link,
@@ -46,18 +47,12 @@ export function mountProject(app: Hono) {
     });
     if (!data) return c.notFound();
     rememberProject(c, id);
-    const { project, envs, incidents, runs, errors } = data;
+    const { project, hasIsms, envs, incidents, runs, errors } = data;
     const down = envs.filter((e) => e.down > 0);
     const diagnostics = envs.some((e) => e.level >= 2);
 
     return c.html(
-      <HubPage c={c} title={project.name} section="project" projectId={id}>
-        <PageHead
-          crumbs={[{ href: "/", label: "Alle Projekte" }, { label: project.org_name }]}
-          icon="layers"
-          title={project.name}
-          sub={`${envs.length} Umgebung${envs.length === 1 ? "" : "en"} · ${project.org_name}`}
-        />
+      <ProjectShell c={c} project={project} tab="overview" title={project.name} hasIsms={hasIsms} sub={`${envs.length} Umgebung${envs.length === 1 ? "" : "en"} · ${project.org_name}`}>
         <div class="stack">
           {envs.length === 0 ? (
             <Card><Empty title="Keine Umgebungen freigegeben" icon="layers">Für dieses Projekt sind Ihnen noch keine Umgebungen freigegeben.</Empty></Card>
@@ -116,7 +111,7 @@ export function mountProject(app: Hono) {
           )}
           </div>
         </div>
-      </HubPage>,
+      </ProjectShell>,
     );
   });
 }

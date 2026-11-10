@@ -63,7 +63,6 @@ export function bucketLabel(t: number, bucketMs: number): string {
   return `${dmhm(t)}–${hm.format(t + bucketMs)}`;
 }
 
-/** Column with a rounded data end and a square base (dataviz mark spec). */
 /** Runs of points with a value; a bucket without one breaks the line instead of being drawn as zero. */
 function splitAtGaps(pts: TimePoint[]): TimePoint[][] {
   const segments: TimePoint[][] = [];
@@ -78,6 +77,7 @@ function splitAtGaps(pts: TimePoint[]): TimePoint[][] {
   return segments;
 }
 
+/** Column with a rounded data end and a square base (dataviz mark spec). */
 function columnPath(x: number, y: number, w: number, base: number): string {
   const h = base - y;
   const r = Math.min(4, w / 2, h);
@@ -151,7 +151,10 @@ export function TimeChart(props: {
           </>
         ))}
         {xt.map((t) => (
-          <text class="axis-label" x={r1(x(t))} y={H - 8} text-anchor="middle">{timeLabel(t, to - from, xStep)}</text>
+          <>
+            <line class="grid-line" x1={r1(x(t))} x2={r1(x(t))} y1={M.t} y2={base} />
+            <text class="axis-label" x={r1(x(t))} y={H - 8} text-anchor="middle">{timeLabel(t, to - from, xStep)}</text>
+          </>
         ))}
         {marks}
         {pts.map((p) => (
@@ -202,40 +205,61 @@ export function Sparkline(props: { values: number[]; label: string }) {
 }
 
 /**
- * The trend under a stat tile's big number (CPU, memory, a disk over 24 h): one line over a soft area,
- * no axes, the scale from 0 to at least `max`, so 30 % fills a third of the height. Gaps stay gaps and
- * every bucket has a hover title. Stretches to the tile's width; its colour follows the value's state.
+ * The chart under a stat tile's big number (CPU, memory, a disk over 24 h), like a small dashboard
+ * panel: a line over a soft area on a grid, the scale on the left (0 to at least `max`, so 30 % fills
+ * a third of the height) and the times below. The plot stretches to the tile's width while its text
+ * keeps its size: the outer SVGs have no viewBox and place grid lines and times in percent, only the
+ * inner one with the data scales, and the scale is HTML beside it. Gaps stay gaps, every bucket has a
+ * hover title, the colour follows the value's state.
  */
 export function Trend(props: { points: TimePoint[]; bucketMs: number; max: number; format: (v: number) => string; label: string; tone?: "warn" | "bad" }) {
   const pts = props.points;
   if (pts.length === 0) return null;
-  const w = 300;
-  const h = 48;
-  const top = Math.max(props.max, ...pts.map((p) => p.v ?? 0));
-  const slot = w / pts.length;
-  const x = (t: number) => r1(((t - pts[0]!.t) / props.bucketMs) * slot + slot / 2);
-  const y = (v: number) => r1(h - 1 - (v / top) * (h - 2));
+  const H = 64;
+  const ticks = yTicks(Math.max(props.max, ...pts.map((p) => p.v ?? 0)), 2);
+  const top = ticks.at(-1)!;
+  const from = pts[0]!.t;
+  const to = pts.at(-1)!.t + props.bucketMs;
+  const xt = xTicks(from, to, 5);
+  const xStep = xt.length > 1 ? xt[1]! - xt[0]! : props.bucketMs;
+  const at = (t: number) => `${r1(((t - from) / (to - from)) * 100)}%`;
+  const gridY = (v: number) => r1(0.5 + (1 - v / top) * (H - 1));
+  // Data space: one unit per bucket across, 0 (top of the scale) to 100 (zero) down.
+  const x = (i: number) => i + 0.5;
+  const y = (v: number) => r1(100 - (Math.min(v, top) / top) * 100);
   return (
-    <svg class={props.tone ? `trend ${props.tone}` : "trend"} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={props.label}>
-      <title>{props.label}</title>
-      <line class="base" vector-effect="non-scaling-stroke" x1="0" x2={w} y1={h - 0.5} y2={h - 0.5} />
-      {splitAtGaps(pts).map((seg) => {
-        const line = seg.map((p, i) => `${i ? "L" : "M"}${x(p.t)},${y(p.v!)}`).join("");
-        return seg.length > 1 ? (
-          <>
-            <path class="area" d={`${line}L${x(seg.at(-1)!.t)},${h}L${x(seg[0]!.t)},${h}Z`} />
-            <path class="line" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" d={line} />
-          </>
-        ) : (
-          <path class="line" vector-effect="non-scaling-stroke" stroke-linecap="round" d={`${line}h0.01`} />
-        );
-      })}
-      {pts.map((p, i) => (
-        <rect class="hit" x={r1(i * slot)} y="0" width={r1(slot)} height={h}>
-          <title>{`${bucketLabel(p.t, props.bucketMs)}: ${p.v === null ? "keine Daten" : props.format(p.v)}`}</title>
-        </rect>
-      ))}
-    </svg>
+    <div class={props.tone ? `trend ${props.tone}` : "trend"}>
+      <div class="trend-y" aria-hidden="true">{[...ticks].reverse().map((t) => <span>{props.format(t)}</span>)}</div>
+      <svg class="trend-plot" width="100%" height={H} role="img" aria-label={props.label}>
+        <title>{props.label}</title>
+        {ticks.map((t) => <line class="grid-line" x1="0" x2="100%" y1={gridY(t)} y2={gridY(t)} />)}
+        {xt.map((t) => <line class="grid-line" x1={at(t)} x2={at(t)} y1="0" y2={H} />)}
+        <svg width="100%" height={H} viewBox={`0 0 ${pts.length} 100`} preserveAspectRatio="none">
+          {splitAtGaps(pts).map((seg) => {
+            const idx = (p: TimePoint) => Math.round((p.t - from) / props.bucketMs);
+            const line = seg.map((p, i) => `${i ? "L" : "M"}${x(idx(p))},${y(p.v!)}`).join("");
+            return seg.length > 1 ? (
+              <>
+                <path class="area" d={`${line}L${x(idx(seg.at(-1)!))},100L${x(idx(seg[0]!))},100Z`} />
+                <path class="line" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" d={line} />
+              </>
+            ) : (
+              <path class="line" vector-effect="non-scaling-stroke" stroke-linecap="round" d={`${line}h0.01`} />
+            );
+          })}
+          {pts.map((p, i) => (
+            <rect class="hit" x={i} y="0" width="1" height="100">
+              <title>{`${bucketLabel(p.t, props.bucketMs)}: ${p.v === null ? "keine Daten" : props.format(p.v)}`}</title>
+            </rect>
+          ))}
+        </svg>
+      </svg>
+      <svg class="trend-x" width="100%" height="16" aria-hidden="true">
+        {xt.filter((t) => (t - from) / (to - from) > 0.06 && (to - t) / (to - from) > 0.06).map((t) => (
+          <text x={at(t)} y="12" text-anchor="middle">{timeLabel(t, to - from, xStep)}</text>
+        ))}
+      </svg>
+    </div>
   );
 }
 

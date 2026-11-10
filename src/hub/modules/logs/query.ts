@@ -16,7 +16,7 @@
  */
 import type { TimePoint } from "../../../shared/ui/charts";
 import { logsIndex, logsIndices, type EsIndex, type SearchHit, type SearchResponse } from "../es/client";
-import type { TimeRange } from "../es/range";
+import { fixedInterval, type TimeRange } from "../es/range";
 import type { LogsSource, NamedLogsSource } from "../sources/config";
 
 export const LOG_LEVELS = ["ERROR", "WARN", "INFO", "DEBUG"] as const;
@@ -94,6 +94,15 @@ function levelAndText(filters: LogFilters): Clause[] {
   return out;
 }
 
+/** The whole view as one query: the sources' scope, the time range, level and text. */
+function viewQuery(scope: Clause[], opts: { range: TimeRange; filters: LogFilters }): Clause {
+  return { bool: { filter: [...scope, { range: { "@timestamp": { gte: opts.range.from, lte: opts.range.to, format: "epoch_millis" } } }, ...levelAndText(opts.filters)] } };
+}
+
+function sourcesAgg(sources: readonly NamedLogsSource[]): Clause {
+  return { filters: { filters: Object.fromEntries(sources.map((s) => [String(s.id), sourceClause(s)])) } };
+}
+
 export function buildLogsSearch(
   sources: readonly NamedLogsSource[],
   opts: { range: TimeRange; filters: LogFilters; before?: LogCursor | null; after?: LogCursor | null },
@@ -122,6 +131,25 @@ export function buildLogsSearch(
   };
 }
 
+/** The newest and the oldest entry of an environment's sources: does it still arrive, how far back is it kept (ISMS). */
+export function buildLogsSpan(sources: readonly NamedLogsSource[]): LogsSearch {
+  const { index, filter } = sourcesScope(sources);
+  return {
+    index,
+    body: {
+      size: 0,
+      track_total_hits: false,
+      query: { bool: { filter } },
+      aggs: { newest: { max: { field: "@timestamp" } }, oldest: { min: { field: "@timestamp" } } },
+    },
+  };
+}
+
+export function toLogsSpan(res: SearchResponse): { newest: number | null; oldest: number | null } {
+  const value = (agg: { value?: number | null } | undefined) => (typeof agg?.value === "number" ? agg.value : null);
+  return { newest: value(res.aggregations?.newest), oldest: value(res.aggregations?.oldest) };
+}
+
 /** How many entries of the view each source has: the numbers on the source picker. */
 export function buildSourceCounts(sources: readonly NamedLogsSource[], opts: { range: TimeRange; filters: LogFilters }): LogsSearch {
   const { index, filter } = sourcesScope(sources);
@@ -131,8 +159,8 @@ export function buildSourceCounts(sources: readonly NamedLogsSource[], opts: { r
       size: 0,
       // The total is the union: an entry two overlapping sources share counts once there.
       track_total_hits: true,
-      query: { bool: { filter: [...filter, { range: { "@timestamp": { gte: opts.range.from, lte: opts.range.to, format: "epoch_millis" } } }, ...levelAndText(opts.filters)] } },
-      aggs: { sources: { filters: { filters: Object.fromEntries(sources.map((s) => [String(s.id), sourceClause(s)])) } } },
+      query: viewQuery(filter, opts),
+      aggs: { sources: sourcesAgg(sources) },
     },
   };
 }
@@ -145,6 +173,65 @@ export interface SourceCounts {
 export function toSourceCounts(res: SearchResponse): SourceCounts {
   const buckets = (res.aggregations?.sources?.buckets ?? {}) as Record<string, { doc_count: number }>;
   return { total: res.hits.total?.value ?? 0, bySource: new Map(Object.entries(buckets).map(([id, b]) => [Number(id), b.doc_count])) };
+}
+
+/** What a count can be split by. A fixed list: a request names a group, never an Elasticsearch field. */
+const GROUP_FIELDS = { level: "level.keyword", logger: "logger_name.keyword", host: "localhostname.keyword" } as const;
+export const LOG_GROUPS = ["level", "logger", "host", "source"] as const;
+export type LogGroup = (typeof LOG_GROUPS)[number];
+/** Entries without the field get a group of their own, so the groups add up to the total. */
+const NO_VALUE = "(none)";
+
+export function parseLogGroup(value: unknown): LogGroup | null {
+  return LOG_GROUPS.find((g) => g === value) ?? null;
+}
+
+/** An exact count of the view over all its entries, per time bucket and optionally per group. */
+export function buildLogCounts(
+  sources: readonly NamedLogsSource[],
+  opts: { range: TimeRange; filters: LogFilters; intervalMs: number; groupBy?: LogGroup | null; groups: number },
+): LogsSearch {
+  const { index, filter } = sourcesScope(sources);
+  const { groupBy, range } = opts;
+  return {
+    index,
+    body: {
+      size: 0,
+      track_total_hits: true,
+      query: viewQuery(filter, opts),
+      aggs: {
+        over_time: { date_histogram: { field: "@timestamp", fixed_interval: fixedInterval(opts.intervalMs), min_doc_count: 0, extended_bounds: { min: range.from, max: range.to } } },
+        ...(groupBy === "source" ? { sources: sourcesAgg(sources) } : {}),
+        ...(groupBy && groupBy !== "source" ? { groups: { terms: { field: GROUP_FIELDS[groupBy], size: opts.groups, missing: NO_VALUE } } } : {}),
+      },
+    },
+  };
+}
+
+export interface LogCount {
+  key: string;
+  count: number;
+}
+
+export interface LogCounts {
+  total: number;
+  overTime: TimePoint[];
+  groups: LogCount[];
+  /** Entries in groups beyond the requested number. */
+  other: number;
+}
+
+export function toLogCounts(res: SearchResponse, sources: readonly NamedLogsSource[], groupBy?: LogGroup | null): LogCounts {
+  const aggs = res.aggregations ?? {};
+  const overTime = (aggs.over_time?.buckets ?? []).map((b: { key: number; doc_count: number }) => ({ t: b.key, v: b.doc_count }));
+  const total = res.hits.total?.value ?? 0;
+  if (groupBy === "source") {
+    const { bySource } = toSourceCounts(res);
+    const groups = sources.map((s) => ({ key: s.name, count: bySource.get(s.id) ?? 0 })).sort((a, b) => b.count - a.count);
+    return { total, overTime, groups, other: 0 };
+  }
+  const groups = (aggs.groups?.buckets ?? []).map((b: { key: string | number; doc_count: number }) => ({ key: String(b.key), count: b.doc_count }));
+  return { total, overTime, groups, other: aggs.groups?.sum_other_doc_count ?? 0 };
 }
 
 export interface LogRow {

@@ -258,6 +258,41 @@ describe("checks on a fixture host (fake proc, df, systemctl, docker)", () => {
     expect(report(await run(["--print"], { env: noStat, path: [FAKE_BIN] })).cpu).toBeNull();
   }, SLOW);
 
+  test("swap from meminfo, network bytes of the non-virtual interfaces, uptime in whole seconds", async () => {
+    const { fx, env } = fixtureHost();
+    const r0 = report(await run(["--print"], { env, path: [FAKE_BIN] }));
+    expect({ swap: r0.swap, net: r0.net, uptime: r0.uptime }).toEqual({ swap: { total_kb: 1048576, free_kb: 1048576 }, net: null, uptime: null });
+
+    mkdirSync(join(fx, "proc/net"));
+    writeFileSync(join(fx, "proc/net/dev"), [
+      "Inter-|   Receive                                                |  Transmit",
+      " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed",
+      "    lo: 9000000    100    0    0    0     0          0         0  9000000     100    0    0    0     0       0          0",
+      "  eth0:81920000  5000    0    0    0     0          0         0 20480000    4000    0    0    0     0       0          0",
+      "  ens4:1000 10    0    0    0     0          0         0 2000    20    0    0    0     0       0          0",
+      "docker0: 7000000  70    0    0    0     0          0         0  7000000      70    0    0    0     0       0          0",
+      "veth1a2b: 5000000  50    0    0    0     0          0         0  5000000      50    0    0    0     0       0          0",
+    ].join("\n") + "\n");
+    const sys = join(fx, "sys");
+    for (const name of ["lo", "docker0", "veth1a2b"]) mkdirSync(join(sys, "devices/virtual/net", name), { recursive: true });
+    writeFileSync(join(fx, "proc/uptime"), "350735.97 1395442.02\n");
+    const r = report(await run(["--print"], { env: { ...env, VANTAGE_SYS: sys }, path: [FAKE_BIN] }));
+    expect({ net: r.net, uptime: r.uptime }).toEqual({ net: { rx_bytes: 81921000, tx_bytes: 20482000 }, uptime: 350735 });
+    expect(r.errors.some((e) => /^(net|uptime):/.test(e))).toBe(false);
+
+    // Without the sys tree only loopback is left out; garbage is an error, never a number.
+    expect(report(await run(["--print"], { env: { ...env, VANTAGE_SYS: join(fx, "nosys") }, path: [FAKE_BIN] })).net).toEqual({ rx_bytes: 93921000, tx_bytes: 32482000 });
+    writeFileSync(join(fx, "proc/net/dev"), "h1\nh2\n  eth0: x y\n");
+    writeFileSync(join(fx, "proc/uptime"), "soon\n");
+    // The fixture's sys tree, not the machine's: in a container eth0 is a veth under /sys/devices/virtual/net.
+    const garbage = report(await run(["--print"], { env: { ...env, VANTAGE_SYS: sys }, path: [FAKE_BIN] }));
+    expect({ net: garbage.net, uptime: garbage.uptime }).toEqual({ net: null, uptime: null });
+    expect(garbage.errors.filter((e) => /^(net|uptime):/.test(e))).toHaveLength(2);
+
+    const { env: noSwap } = fixtureHost("MemTotal: 1000000 kB\nMemAvailable: 500000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n");
+    expect(report(await run(["--print"], { env: noSwap, path: [FAKE_BIN] })).swap).toEqual({ total_kb: 0, free_kb: 0 });
+  }, SLOW);
+
   test("dash parses the fixture host the same way", async () => {
     if (!existsSync("/bin/dash")) return;
     const { env } = fixtureHost();

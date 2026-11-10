@@ -99,11 +99,13 @@ export async function handleRpc(c: Context, msg: RpcRequest): Promise<object | n
 }
 
 export function mountAgentApi(app: Hono) {
-  for (const path of ["/api/mcp", "/api/v1/environments", "/api/v1/environments/*", "/api/v1/incidents"]) app.use(path, tokenUser);
+  for (const path of ["/api/mcp", "/api/v1/environments", "/api/v1/environments/*", "/api/v1/incidents", "/api/v1/projects/*"]) app.use(path, tokenUser);
 
   app.get("/api/v1/environments", (c) => rest(c, "list_environments"));
   app.get("/api/v1/environments/:id", (c) => rest(c, "get_environment_status", { environment_id: c.req.param("id") }));
   app.get("/api/v1/environments/:id/logs", (c) => rest(c, "search_logs", { environment_id: c.req.param("id") }));
+  // Before :entryId, which would take "count" for an entry id.
+  app.get("/api/v1/environments/:id/logs/count", (c) => rest(c, "count_logs", { environment_id: c.req.param("id") }));
   app.get("/api/v1/environments/:id/logs/:entryId", (c) => rest(c, "get_log_entry", { environment_id: c.req.param("id"), entry_id: c.req.param("entryId") }));
   app.get("/api/v1/environments/:id/errors", (c) => rest(c, "list_errors", { environment_id: c.req.param("id") }));
   app.get("/api/v1/environments/:id/error-ignore-rules", (c) => rest(c, "list_error_ignore_rules", { environment_id: c.req.param("id") }));
@@ -113,6 +115,7 @@ export function mountAgentApi(app: Hono) {
   app.get("/api/v1/environments/:id/test-runs", (c) => rest(c, "list_test_runs", { environment_id: c.req.param("id") }));
   app.get("/api/v1/environments/:id/ansible-runs", (c) => rest(c, "list_ansible_runs", { environment_id: c.req.param("id") }));
   app.get("/api/v1/incidents", (c) => rest(c, "list_incidents"));
+  app.get("/api/v1/projects/:id/isms", (c) => rest(c, "get_isms_status", { project_id: c.req.param("id"), environment_id: c.req.query("environment_id") }));
 
   app.post("/api/mcp", async (c) => {
     // A browser page on another origin must not drive the server with a user's token (DNS rebinding).

@@ -20,7 +20,7 @@ import {
   timingSafeEqualStr,
   verifyPassword,
 } from "./crypto";
-import { clientIp, configureCookies, cookieName, cookieOptions, formData, redirectWith, takeFlash } from "./http";
+import { clientIp, configureCookies, cookieName, cookieOptions, formData, isHtmx, redirectWith, takeFlash } from "./http";
 import { newTotpSecret, otpauthUri, verifyTotp } from "./totp";
 import { Empty, Field, UsernameHint } from "./ui/components";
 import { Icon } from "./ui/icons";
@@ -170,6 +170,14 @@ export function createAuth(opts: AuthOptions) {
   const requireUser: MiddlewareHandler = async (c, next) => {
     if (!c.get("user")) {
       if (c.req.path.startsWith("/api/")) return c.json({ error: "not authenticated" }, 401);
+      if (isHtmx(c)) {
+        // A poll or dialog post after the session ran out: following a 303 would swap the login page
+        // into a fragment (a live block polled with hx-select simply vanishes). Send the whole page there.
+        const current = c.req.header("hx-current-url");
+        const here = current ? new URL(current, c.req.url) : null;
+        c.header("HX-Redirect", `/login?next=${encodeURIComponent(here ? here.pathname + here.search : "/")}`);
+        return c.body(null, 204);
+      }
       const target = c.req.method === "GET" ? c.req.path + (new URL(c.req.url).search || "") : "/";
       return c.redirect(`/login?next=${encodeURIComponent(target)}`, 303);
     }

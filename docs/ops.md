@@ -98,8 +98,10 @@ Checks and default thresholds (overridable per host):
 Reports are validated strictly (`src/shared/hosts/report.ts`: unknown keys, wrong types or values out of
 range reject the whole report, max 64 KB, at most one report per host per 20 s) and kept 30 days with
 the results as evaluated at the time. They also carry the CPU time since boot (`cpu`, ticks from
-`/proc/stat`; optional, older agents leave it out). It has no threshold: the hub's server page turns two
-consecutive reports into CPU usage. Each check has a state; a change sends an event:
+`/proc/stat`), swap (`swap`), the bytes received and sent by the non-virtual network interfaces (`net`)
+and the uptime in seconds (`uptime`); all optional, older agents leave them out. They have no threshold:
+the hub's server page turns two consecutive reports into CPU usage, I/O wait and network traffic. Since
+unknown keys reject a report, the hub that accepts a new key is deployed before agents that send it. Each check has a state; a change sends an event:
 ok → warning/critical fires, warning ↔ critical fires again with the new severity, back to ok
 resolves, a check that disappears from the report (unmounted filesystem) resolves.
 

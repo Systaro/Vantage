@@ -112,10 +112,12 @@ export function latestHealth(tx: any, monitorId: number) {
 
 function recentChecks(tx: any, envId: number) {
   return all<{ monitor_id: number; at: string; ok: boolean; message: string; latency_ms: number | null }>(tx`
-    select monitor_id, at, ok, message, latency_ms from (
-      select c.*, row_number() over (partition by c.monitor_id order by c.at desc) as rn
-      from monitor_checks c where c.environment_id = ${envId} and c.at > now() - interval '7 days'
-    ) x where rn <= 60 order by at`);
+    select c.monitor_id, c.at, c.ok, c.message, c.latency_ms
+    from monitors m cross join lateral (
+      select monitor_id, at, ok, message, latency_ms from monitor_checks
+      where monitor_id = m.id and at > now() - interval '7 days' order by at desc limit 60
+    ) c
+    where m.environment_id = ${envId} order by c.at`);
 }
 
 const QUARTER_HOUR = 15 * 60_000;

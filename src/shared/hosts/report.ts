@@ -8,16 +8,21 @@
  *   "disks":   [{ "mount": "/", "device": "/dev/sda1", "fstype": "ext4",
  *                 "size_kb": 1000, "used_kb": 400, "avail_kb": 600, "used_pct": 40.0 }],
  *   "memory":  { "total_kb": 2048000, "available_kb": 1024000, "used_pct": 50.0 } | null,
+ *   "swap":    { "total_kb": 1048576, "free_kb": 1000000 } | null,
  *   "load":    { "load1": 0.12, "load5": 0.2, "load15": 0.3, "cores": 4 } | null,
  *   "cpu":     { "total": 22800, "idle": 16250, "iowait": 520 } | null,
+ *   "net":     { "rx_bytes": 81920000, "tx_bytes": 20480000 } | null,
+ *   "uptime":  350735 | null,
  *   "systemd": { "failed": ["foo.service"] } | null,
  *   "docker":  { "total": 3, "stopped": ["db"] } | null,
  *   "es":      { "reachable": true, "blocked_indices": 0, "max_disk_pct": 71 } | null,
  *   "errors":  ["docker: permission denied"]
  * }
  * `null` means the check is not available on that host (no systemd, no docker access, no ES URL).
- * `cpu` holds clock ticks since boot (/proc/stat); usage comes from two reports (`cpuUsagePct`). Agents
- * before it was added leave the key out, so it is the one optional key.
+ * `cpu` holds clock ticks since boot (/proc/stat) and `net` bytes since boot over the physical
+ * interfaces; usage and traffic come from two reports (`cpuUsagePct`, `bitRate`). `uptime` is in
+ * seconds. Agents before these were added leave `cpu`, `swap`, `net` and `uptime` out, so those keys
+ * are optional. A hub without them rejects reports that carry them: deploy the hub before the agent.
  */
 
 export interface DiskReport {
@@ -39,6 +44,9 @@ export interface HostReport {
   memory: { total_kb: number; available_kb: number; used_pct: number } | null;
   load: { load1: number; load5: number; load15: number; cores: number } | null;
   cpu?: { total: number; idle: number; iowait: number } | null;
+  swap?: { total_kb: number; free_kb: number } | null;
+  net?: { rx_bytes: number; tx_bytes: number } | null;
+  uptime?: number | null;
   systemd: { failed: string[] } | null;
   docker: { total: number; stopped: string[] } | null;
   es: { reachable: boolean; blocked_indices: number; max_disk_pct: number | null } | null;
@@ -84,7 +92,7 @@ const KB_MAX = 2 ** 53;
 
 export function parseReport(input: unknown): { ok: true; report: HostReport } | { ok: false; error: string } {
   try {
-    const r = obj(input, "report", ["version", "agent", "hostname", "time", "disks", "memory", "load", "systemd", "docker", "es", "errors"], ["cpu"]);
+    const r = obj(input, "report", ["version", "agent", "hostname", "time", "disks", "memory", "load", "systemd", "docker", "es", "errors"], ["cpu", "swap", "net", "uptime"]);
     if (r.version !== 1) throw new ReportError("version must be 1");
     const report: HostReport = {
       version: 1,
@@ -126,6 +134,16 @@ export function parseReport(input: unknown): { ok: true; report: HostReport } | 
         const idle = num(u.idle, "cpu.idle", 0, total, true);
         return { total, idle, iowait: num(u.iowait, "cpu.iowait", 0, total - idle, true) };
       }),
+      swap: nullable(r.swap ?? null, (x) => {
+        const w = obj(x, "swap", ["total_kb", "free_kb"]);
+        const total = num(w.total_kb, "swap.total_kb", 0, KB_MAX, true);
+        return { total_kb: total, free_kb: num(w.free_kb, "swap.free_kb", 0, total, true) };
+      }),
+      net: nullable(r.net ?? null, (x) => {
+        const n = obj(x, "net", ["rx_bytes", "tx_bytes"]);
+        return { rx_bytes: num(n.rx_bytes, "net.rx_bytes", 0, Number.MAX_SAFE_INTEGER, true), tx_bytes: num(n.tx_bytes, "net.tx_bytes", 0, Number.MAX_SAFE_INTEGER, true) };
+      }),
+      uptime: r.uptime == null ? null : num(r.uptime, "uptime", 0, 1e10, true),
       systemd: nullable(r.systemd, (x) => {
         const s = obj(x, "systemd", ["failed"]);
         return { failed: list(s.failed, "systemd.failed", 500, (u, p) => str(u, p, 256, 1)) };

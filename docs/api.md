@@ -31,18 +31,20 @@ other than Vantage's own are refused (DNS rebinding).
 
 | Tool | Access | What it returns |
 |---|---|---|
-| `list_environments` | any | every environment you see: id, organisation, project, kind, your access, monitors down, open incidents |
-| `get_environment_status` | overview | monitors with status and 24 h uptime (health-page monitors with the components and metrics of their latest reading, `via_runner` for monitors a runner probes from inside the customer network), open incidents, latest run per test suite; plus open error groups and the servers a runner reads with their checks and current CPU usage (diagnostics), and open vulnerabilities by severity (security) |
-| `get_server_history` | diagnostics | one server's readings over time as its page shows them: CPU usage (null while its agent sends no CPU time, `has_cpu`), load per core, memory and each filesystem in percent, per bucket; `environment_id`, `server` (a name from `get_environment_status`), `range` (24h, 7d, 30d) |
+| `list_environments` | any | every environment you see: id, organisation, project and `project_id`, kind, your access, monitors down, open incidents |
+| `get_environment_status` | overview | monitors with status and 24 h uptime (health-page monitors with the components and metrics of their latest reading, `via_runner` for monitors a runner probes from inside the customer network), open incidents, latest run per test suite; plus open error groups and the servers a runner reads with their checks, current CPU and I/O wait (`cpu_pct`, `iowait_pct`), network traffic in bit/s (`net_in_bps`, `net_out_bps`), swap use (`swap_pct`), CPU cores and boot time (`booted_at`) (diagnostics), and open vulnerabilities by severity (security) |
+| `get_server_history` | diagnostics | one server's readings over time as its page shows them: CPU usage and I/O wait (null while its agent sends no CPU time, `has_cpu`), load per core, memory, swap and each filesystem in percent, network traffic in and out in bit/s (null while its agent sends no network counters, `has_net`), per bucket; `environment_id`, `server` (a name from `get_environment_status`), `range` (24h, 7d, 30d) |
 | `list_incidents` | overview | incidents, newest first; `environment_id`, `include_resolved`, `limit` (≤ 200) |
 | `list_test_runs` | overview | recent test runs; `environment_id`, `limit` (≤ 100) |
 | `search_logs` | diagnostics | log entries with their `id` and `source`, newest first, from all log sources of the environment or from the one `source` names; the result's `sources` lists the names; `environment_id`, `query` (simple query string), `levels`, `range` (15m, 1h, 24h, 7d), `source`, `limit` (≤ 100) |
+| `count_logs` | diagnostics | how many entries match, over everything in the range and not limited like `search_logs`: the exact `total`, `over_time` (count per `interval`, at most about 60 points), and with `group_by` (level, logger, host, source) the largest `groups` plus `other` for the rest (with many distinct values the group counts can be slightly off, entries without the field count under `(none)`); `environment_id`, `query`, `levels`, `range`, `source` as in `search_logs`, `group_by`, `limit` (groups, ≤ 50, default 10) |
 | `get_log_entry` | diagnostics | one log entry with every field of the document (host, application, thread, MDC values) and its `source`, as the logs page's detail dialog shows it; `environment_id`, `entry_id` (an `id` from `search_logs`) |
 | `list_errors` | diagnostics | error groups from APM (`source: apm`) and from ERROR log entries (`source: logs`, with `sample_entry_id` for `get_log_entry`); `environment_id`, `status` (open, resolved, ignored), `limit` |
 | `list_error_ignore_rules` | diagnostics | the ignore rules that drop matching errors before they become a group: `pattern` (regex on title or place), `scope` (environment or project), `note`, `matched` (occurrences dropped), `last_matched_at`; `environment_id` |
 | `list_vulnerabilities` | security | counts by severity, the Dependency-Track projects (age of the last SBOM) and Wazuh servers behind them, and the findings; `environment_id`, `severity`, `limit` (≤ 500) |
 | `list_ansible_runs` | security | Ansible runs from Semaphore on the environment's servers, newest first, with each of those servers' PLAY RECAP counts and the task it failed in, plus a 30-day summary per server; `environment_id`, `failed_only`, `limit` (≤ 200) |
 | `get_security_alerts` | security | Wazuh alerts of the environment's servers, last 24 h: totals by rule level, top rules, every alert from level 10, `stale` when the newest is older than 6 h |
+| `get_isms_status` | overview | the project's ISMS controls as its ISMS tab shows them: `ref`, `title`, `basis`, `kind` (uptime, tls, servers, logs, vulns, maintenance, record), `status` (ok, warn, deviation, due, open, unknown) with `value` and `detail`, the latest record and a `summary` of counts; checks on servers and logs need diagnostics on their environment, on vulns (open critical and high vulnerabilities against a fixing deadline) and maintenance (Ansible runs per server) security, without it they read `unknown`; `project_id`, `environment_id` (optional: only the controls checking that environment, as its ISMS tab shows them) |
 
 Without the access a tool needs, it answers "Environment not found, or your access does not
 include …", the same whether the environment exists or not.
@@ -56,6 +58,7 @@ The same tools as plain GET requests, answers as `{"data": …}` or `{"error": "
 | `GET /api/v1/environments` | `list_environments` |
 | `GET /api/v1/environments/:id` | `get_environment_status` |
 | `GET /api/v1/environments/:id/logs?query=&levels=ERROR,WARN&range=24h&source=&limit=50` | `search_logs` |
+| `GET /api/v1/environments/:id/logs/count?query=&levels=ERROR&range=24h&source=&group_by=logger&limit=10` | `count_logs` |
 | `GET /api/v1/environments/:id/logs/:entryId` | `get_log_entry` |
 | `GET /api/v1/environments/:id/errors?status=open` | `list_errors` |
 | `GET /api/v1/environments/:id/error-ignore-rules` | `list_error_ignore_rules` |
@@ -65,6 +68,7 @@ The same tools as plain GET requests, answers as `{"data": …}` or `{"error": "
 | `GET /api/v1/environments/:id/servers/:server/history?range=7d` | `get_server_history` |
 | `GET /api/v1/environments/:id/test-runs` | `list_test_runs` |
 | `GET /api/v1/incidents?environment_id=&include_resolved=true` | `list_incidents` |
+| `GET /api/v1/projects/:id/isms[?environment_id=]` | `get_isms_status` |
 
 Status codes: 401 without a valid token, 404 when the environment is not visible at the needed
 level, 400 for invalid arguments.

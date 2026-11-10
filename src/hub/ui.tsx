@@ -190,6 +190,8 @@ export interface EnvContext {
   hasAnsible: boolean;
   /** A runner reads servers of this environment; like the servers themselves only visible from level 2. */
   hasServers: boolean;
+  /** An ISMS control checks this environment. */
+  hasIsms: boolean;
 }
 
 /** Loads an environment the current user may see at `minLevel`, or null (→ 404, never 403). */
@@ -206,6 +208,7 @@ export async function loadEnv(c: Context, id: number, minLevel = 1): Promise<Env
     // environment_sources is only readable with level 2, so for overview users both stay false.
     const sources = (await tx`select kind from environment_sources where environment_id = ${id}`) as { kind: string }[];
     const servers = await first(tx`select 1 from servers where environment_id = ${id} limit 1`);
+    const isms = await first(tx`select 1 from isms_controls where environment_id = ${id} limit 1`);
     return {
       id: row.id,
       slug: row.slug,
@@ -224,6 +227,7 @@ export async function loadEnv(c: Context, id: number, minLevel = 1): Promise<Env
       hasSecurity: sources.some((s) => s.kind === "dependency_track" || s.kind === "wazuh"),
       hasAnsible: sources.some((s) => s.kind === "ansible"),
       hasServers: !!servers,
+      hasIsms: !!isms,
     };
   });
 }
@@ -264,6 +268,7 @@ export function EnvShell(props: PropsWithChildren<{ c: Context; env: EnvContext;
   if (e.level >= 2 && e.hasApm) tabs.push({ key: "apm", href: `${base}/apm`, label: "APM", icon: "gauge" });
   if (e.level >= 3 && e.hasSecurity) tabs.push({ key: "security", href: `${base}/security`, label: "Sicherheit", icon: "shield-check" });
   if (e.level >= 3 && e.hasAnsible) tabs.push({ key: "maintenance", href: `${base}/maintenance`, label: "Wartung", icon: "terminal" });
+  if (e.hasIsms) tabs.push({ key: "isms", href: `${base}/isms`, label: "ISMS", icon: "shield-check" });
   if (props.c.get("user")?.isAdmin) tabs.push({ key: "settings", href: `${base}/settings`, label: "Einstellungen", icon: "settings" });
   return (
     <HubPage c={props.c} title={`${props.title} – ${envLabel(e)}`} envId={e.id} projectId={e.projectId}>
@@ -280,6 +285,29 @@ export function EnvShell(props: PropsWithChildren<{ c: Context; env: EnvContext;
         actions={props.actions}
       />
       <Tabs items={tabs.map((t) => ({ href: t.href, label: t.label, icon: t.icon, active: t.key === props.tab }))} />
+      {props.children}
+    </HubPage>
+  );
+}
+
+export interface ProjectContext {
+  id: number;
+  name: string;
+  org_name: string;
+}
+
+/** A project page with its tabs. The ISMS tab only shows once the project has controls, or to admins who add them. */
+export function ProjectShell(
+  props: PropsWithChildren<{ c: Context; project: ProjectContext; tab: "overview" | "isms"; title: string; sub?: Child; actions?: Child; hasIsms: boolean }>,
+) {
+  const p = props.project;
+  const base = `/projects/${p.id}`;
+  const tabs: { key: string; href: string; label: string; icon: IconName }[] = [{ key: "overview", href: base, label: "Übersicht", icon: "layout-dashboard" }];
+  if (props.hasIsms || props.c.get("user")?.isAdmin) tabs.push({ key: "isms", href: `${base}/isms`, label: "ISMS", icon: "shield-check" });
+  return (
+    <HubPage c={props.c} title={props.title} section="project" projectId={p.id}>
+      <PageHead crumbs={[{ href: "/", label: "Alle Projekte" }, { label: p.org_name }]} icon="layers" title={p.name} sub={props.sub} actions={props.actions} />
+      {tabs.length > 1 && <Tabs items={tabs.map((t) => ({ href: t.href, label: t.label, icon: t.icon, active: t.key === props.tab }))} />}
       {props.children}
     </HubPage>
   );

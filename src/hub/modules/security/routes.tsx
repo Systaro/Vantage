@@ -18,7 +18,7 @@ const SEVERITIES: Severity[] = ["critical", "high", "medium", "low", "unassigned
 const SEVERITY_TONE: Record<Severity, Tone> = { critical: "bad", high: "warn", medium: "info", low: "idle", unassigned: "idle" };
 const MAX_ROWS = 300;
 /** An SBOM this old probably no longer describes what runs. */
-const STALE_BOM_DAYS = 30;
+export const STALE_BOM_DAYS = 30;
 
 export function SeverityBadge(props: { severity: Severity }) {
   return <Badge tone={SEVERITY_TONE[props.severity]}>{SEVERITY_LABEL[props.severity]}</Badge>;

@@ -13,7 +13,7 @@ import { encryptString, newToken, sha256Hex } from "../src/shared/crypto";
 import { parseResultsBody, type ResultsBody, type RunnerConfig } from "../src/shared/runner-protocol";
 import { mountRunnerApi } from "../src/hub/modules/runners/api";
 import { processRunnerResults, processServerReports, RUNNER_SILENT_MS, runnerWatchdogs } from "../src/hub/modules/runners/process";
-import { currentCpu, serverHistory } from "../src/hub/modules/runners/metrics";
+import { currentRates, serverHistory } from "../src/hub/modules/runners/metrics";
 import { runnersForOrg, serverStatuses } from "../src/hub/modules/runners/routes";
 import { Runner } from "../src/runner/runner";
 import { asUser, createHubTestDb, type TestDb } from "./helpers/db";
@@ -214,7 +214,7 @@ describe("server readings", () => {
     const alice = <T,>(fn: (tx: any) => Promise<T>) => asUser(db.hub, w.aliceNordwindShopOverview, fn);
     const server = { id, interval_seconds: 300 };
 
-    expect((await bob((tx) => currentCpu(tx, w.envs.shopProd))).get(id)).toBeNull();
+    expect((await bob((tx) => currentRates(tx, w.envs.shopProd))).get(id)?.cpu).toBeNull();
     const h = await bob((tx) => serverHistory(tx, server, t0, t0 + 15 * MIN, 5 * MIN));
     expect(h.hasCpu).toBe(true);
     expect(h.cpu.map((p) => p.v)).toEqual([null, 20, 10]);
@@ -226,11 +226,47 @@ describe("server readings", () => {
     // The two newest readings are two hours apart, so there is no current value; a fresh pair gives one.
     await db.owner`insert into server_reports (server_id, environment_id, at, report, results, processed_at)
       values (${id}, ${w.envs.shopProd}, ${new Date(t0 + 135 * MIN)}, ${report(45, { cpu: { total: 5000, idle: 2950, iowait: 50 } })}::jsonb, '[]'::jsonb, now())`;
-    expect((await bob((tx) => currentCpu(tx, w.envs.shopProd))).get(id)).toBeCloseTo(50);
+    expect((await bob((tx) => currentRates(tx, w.envs.shopProd))).get(id)?.cpu).toBeCloseTo(50);
 
-    expect((await alice((tx) => currentCpu(tx, w.envs.shopProd))).size).toBe(0);
+    expect((await alice((tx) => currentRates(tx, w.envs.shopProd))).size).toBe(0);
     const hidden = await alice((tx) => serverHistory(tx, server, t0, t0 + 15 * MIN, 5 * MIN));
     expect({ cpu: hidden.cpu.every((p) => p.v === null), disks: hidden.disks, hasCpu: hidden.hasCpu }).toEqual({ cpu: true, disks: [], hasCpu: false });
+
+    await db.owner`delete from grants where id = ${bobGrant[0].id}`;
+    await db.owner`delete from servers where id = ${id}`;
+  });
+});
+
+describe("more server readings", () => {
+  test("I/O wait, swap and network traffic per bucket, the current ones from the two newest reports", async () => {
+    const [{ id }] = (await db.owner`insert into servers (environment_id, runner_id, name, ssh_target) values (${w.envs.shopProd}, ${runnerId}, 'app-03', 'vantage@10.0.0.7') returning id`) as any[];
+    const MIN = 60_000;
+    const t0 = Math.floor((Date.now() - 3 * 3600_000) / 3600_000) * 3600_000;
+    const readings: [number, Record<string, unknown>][] = [
+      [t0, { cpu: { total: 1000, idle: 800, iowait: 100 }, net: { rx_bytes: 0, tx_bytes: 0 }, swap: { total_kb: 1000, free_kb: 800 } }],
+      // 300 s later: 50 of 1000 ticks waiting, 75 000 bytes in (2 000 bit/s) and 7 500 out (200 bit/s)
+      [t0 + 5 * MIN, { cpu: { total: 2000, idle: 1550, iowait: 150 }, net: { rx_bytes: 75000, tx_bytes: 7500 }, swap: { total_kb: 1000, free_kb: 600 } }],
+      // a reboot: the counters start again, so no rates; no swap configured any more
+      [t0 + 10 * MIN, { cpu: { total: 500, idle: 400, iowait: 10 }, net: { rx_bytes: 100, tx_bytes: 100 }, swap: { total_kb: 0, free_kb: 0 } }],
+    ];
+    for (const [at, extra] of readings) {
+      await db.owner`insert into server_reports (server_id, environment_id, at, report, results, processed_at)
+        values (${id}, ${w.envs.shopProd}, ${new Date(at)}, ${report(40, { ...extra, time: at / 1000 })}::jsonb, '[]'::jsonb, now())`;
+    }
+    const bobGrant = (await db.owner`insert into grants (user_id, project_id, level) values (${w.bobBergbauDiagnostics}, ${w.projects.shop}, 'diagnostics') returning id`) as any[];
+    const bob = <T,>(fn: (tx: any) => Promise<T>) => asUser(db.hub, w.bobBergbauDiagnostics, fn);
+    const h = await bob((tx) => serverHistory(tx, { id, interval_seconds: 300 }, t0, t0 + 15 * MIN, 5 * MIN));
+    expect({ hasNet: h.hasNet, hasSwap: h.hasSwap }).toEqual({ hasNet: true, hasSwap: true });
+    expect(h.iowait.map((p) => p.v)).toEqual([null, 5, null]);
+    expect(h.netIn.map((p) => p.v)).toEqual([null, 2000, null]);
+    expect(h.netOut.map((p) => p.v)).toEqual([null, 200, null]);
+    expect(h.swap.map((p) => p.v)).toEqual([20, 40, null]);
+    expect((await bob((tx) => currentRates(tx, w.envs.shopProd))).get(id)).toEqual({ cpu: null, iowait: null, netIn: null, netOut: null });
+
+    await db.owner`insert into server_reports (server_id, environment_id, at, report, results, processed_at)
+      values (${id}, ${w.envs.shopProd}, ${new Date(t0 + 15 * MIN)}, ${report(40, { cpu: { total: 1500, idle: 1100, iowait: 60 }, net: { rx_bytes: 30100, tx_bytes: 3100 }, time: (t0 + 15 * MIN) / 1000 })}::jsonb, '[]'::jsonb, now())`;
+    const now = (await bob((tx) => currentRates(tx, w.envs.shopProd))).get(id)!;
+    expect({ cpu: now.cpu, iowait: now.iowait, netIn: now.netIn, netOut: now.netOut }).toEqual({ cpu: 25, iowait: 5, netIn: 800, netOut: 80 });
 
     await db.owner`delete from grants where id = ${bobGrant[0].id}`;
     await db.owner`delete from servers where id = ${id}`;

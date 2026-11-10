@@ -5,12 +5,12 @@
  */
 import type { Context, Hono } from "hono";
 import { newToken, sha256Hex } from "../../../shared/crypto";
-import { DEFAULT_THRESHOLDS, formatKb, parseThresholds, THRESHOLD_FIELDS, worstOf, type CheckSeverity } from "../../../shared/hosts/evaluate";
+import { DEFAULT_THRESHOLDS, formatBitRate, formatKb, parseThresholds, THRESHOLD_FIELDS, worstOf, type CheckSeverity } from "../../../shared/hosts/evaluate";
 import type { DiskReport, HostReport } from "../../../shared/hosts/report";
 import { formData, parseId, redirectWith, showDialogStep } from "../../../shared/http";
 import { SSH_TARGET } from "../../../shared/runner-protocol";
 import { TimeChart, Trend, type TimePoint } from "../../../shared/ui/charts";
-import { ActionButton, Ago, Badge, Card, ConfirmAction, CopyButton, DialogButton, Empty, Field, FormDialog, formatPercent, SecretBox, Stat, type Tone } from "../../../shared/ui/components";
+import { ActionButton, Ago, Badge, Card, ConfirmAction, CopyButton, DialogButton, Empty, Field, FormDialog, formatDate, formatPercent, SecretBox, Stat, type Tone } from "../../../shared/ui/components";
 import { Icon } from "../../../shared/ui/icons";
 import { hubConfig } from "../../config";
 import { all, first, rls } from "../../db";
@@ -18,7 +18,7 @@ import { audit, EnvShell, loadEnv, type EnvContext } from "../../ui";
 import { AdminShell } from "../core/admin-shell";
 import { registerSettingsSection } from "../core/registry";
 import { bucketFor, parseRange, PRESETS, RangePicker, type Preset, type TimeRange } from "../es/range";
-import { currentCpu, serverHistory, type ServerHistory } from "./metrics";
+import { currentRates, serverHistory, type Rates, type ServerHistory } from "./metrics";
 import { RUNNER_SILENT_MS, SERVER_SILENT_INTERVALS } from "./process";
 
 const BASE = "/admin/runners";
@@ -278,18 +278,23 @@ export interface ServerStatus {
   last_report_at: Date | null;
   last_error: string | null;
   checks: { key: string; label: string; severity: CheckSeverity; value: number | null; detail: string; since: Date }[];
-  /** Average CPU usage between the two newest reports; null while the agent sends no CPU counters. */
-  cpu_pct: number | null;
-  /** Memory and filesystems of the newest accepted report, for the free space beside the percentages. */
+  /** CPU usage, I/O wait and network traffic between the two newest reports; null while the agent sends no counters. */
+  rates: Rates;
+  /** From the newest accepted report: the sizes beside the percentages, cores, containers and when it booted. */
   memory: HostReport["memory"];
+  swap: HostReport["swap"];
+  load: HostReport["load"];
+  docker: HostReport["docker"];
   disks: DiskReport[];
+  booted_at: Date | null;
 }
 
 /** Servers of an environment (or the one `only`) with their current checks; runs inside rls() (level 2). */
 export async function serverStatuses(tx: any, envId: number, only?: number): Promise<ServerStatus[]> {
-  const servers = await all<Omit<ServerStatus, "checks" | "cpu_pct">>(tx`
+  const servers = await all<Omit<ServerStatus, "checks" | "rates">>(tx`
     select s.id, s.name, s.enabled, s.interval_seconds, s.last_report_at, s.last_error,
-           r.report->'memory' as memory, coalesce(r.report->'disks', '[]') as disks
+           r.report->'memory' as memory, r.report->'swap' as swap, r.report->'load' as load, r.report->'docker' as docker,
+           coalesce(r.report->'disks', '[]') as disks, to_timestamp((r.report->>'time')::float8 - (r.report->>'uptime')::float8) as booted_at
     from servers s left join lateral (
       select report from server_reports where server_id = s.id and results is not null order by at desc limit 1
     ) r on true
@@ -297,8 +302,12 @@ export async function serverStatuses(tx: any, envId: number, only?: number): Pro
   const checks = await all<any>(tx`
     select server_id, check_key as key, label, severity, value, detail, since from server_checks where environment_id = ${envId}
     order by array_position(array['critical', 'warning', 'ok'], severity), check_key`);
-  const cpu = await currentCpu(tx, envId);
-  return servers.map((s) => ({ ...s, checks: checks.filter((k) => k.server_id === s.id).map(({ server_id, ...k }) => k), cpu_pct: cpu.get(s.id) ?? null }));
+  const rates = await currentRates(tx, envId);
+  return servers.map((s) => ({
+    ...s,
+    checks: checks.filter((k) => k.server_id === s.id).map(({ server_id, ...k }) => k),
+    rates: rates.get(s.id) ?? { cpu: null, iowait: null, netIn: null, netOut: null },
+  }));
 }
 
 /** No report for three intervals: the values shown are old. */
@@ -338,34 +347,71 @@ function ServerHead(props: { s: ServerStatus; href?: string }) {
   );
 }
 
+/** "12 Tage", "5 Stunden", "40 Minuten": how long a server has been running. */
+function formatUptime(ms: number): string {
+  const [n, one, many] = ms >= 86_400_000 ? [Math.floor(ms / 86_400_000), "Tag", "Tage"] : ms >= 3_600_000 ? [Math.floor(ms / 3_600_000), "Stunde", "Stunden"] : [Math.max(0, Math.floor(ms / 60_000)), "Minute", "Minuten"];
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+const swapPct = (w: NonNullable<HostReport["swap"]>) => ((w.total_kb - w.free_kb) * 100) / w.total_kb;
+const peak = (points: TimePoint[]) => Math.max(...points.map((p) => p.v ?? 0));
+
+/** Facts beside the charts: how long it runs, its cores, its containers and failed services. */
+function ServerFacts(props: { s: ServerStatus }) {
+  const { s } = props;
+  const docker = s.checks.find((k) => k.key === "docker");
+  const systemd = s.checks.find((k) => k.key === "systemd");
+  return (
+    <div class="grid server-facts">
+      {s.booted_at && <Stat label="Laufzeit" value={formatUptime(Date.now() - new Date(s.booted_at).getTime())} hint={`seit ${formatDate(s.booted_at)}`} />}
+      {s.load && <Stat label="CPU-Kerne" value={String(s.load.cores)} />}
+      {s.docker && docker && <Stat label="Container" value={String(s.docker.total)} tone={SEVERITY_TONE[docker.severity]} hint={docker.detail} />}
+      {systemd && <Stat label="Fehlgeschlagene Dienste" value={String(systemd.value ?? 0)} tone={SEVERITY_TONE[systemd.severity]} hint={systemd.value ? systemd.detail : undefined} />}
+    </div>
+  );
+}
+
 /**
- * The figures that matter at a glance, as big tiles: CPU (load per core while the agent sends no CPU
- * time), memory and every filesystem, with the free space below the percentage. On the tab each tile
- * also shows its last 24 hours and links to the server page.
+ * The figures that matter at a glance, as big tiles: CPU, load, memory, swap, every filesystem and
+ * the network traffic, with what goes with the number below it. On the tab each tile also charts its
+ * last 24 hours and links to the server page; the page has the tiles without charts.
  */
 function ServerTiles(props: { s: ServerStatus; hasCpu: boolean; day?: { history: ServerHistory; bucketMs: number; href: string } }) {
   const { s, day } = props;
+  const h = day?.history;
   const load = s.checks.find((k) => k.key === "load");
   const memory = s.checks.find((k) => k.key === "memory");
   const disks = s.checks.filter((k) => k.key.startsWith("disk:") && k.value !== null).sort(byMount);
-  const trend = (points: TimePoint[] | undefined, label: string, format: (v: number) => string, max: number, severity: CheckSeverity = "ok") =>
+  const chart = (points: TimePoint[] | undefined, label: string, format: (v: number) => string, max: number, severity: CheckSeverity = "ok") =>
     day && points && <Trend points={points} bucketMs={day.bucketMs} max={max} format={format} label={`${label}, letzte 24 Stunden`} tone={VALUE_TONE[severity]} />;
-  const loadHint = load?.value != null ? `Last ${perCore(load.value)} je Kern` : undefined;
+  const hasCpu = s.rates.cpu !== null || props.hasCpu;
+  const hasNet = s.rates.netIn !== null || !!h?.hasNet;
+  const net = (label: string, now: number | null, points: TimePoint[] | undefined) => (
+    <Stat label={label} value={now === null ? "–" : formatBitRate(now)} href={day?.href} hint={points && `Spitze ${formatBitRate(peak(points))}`}>
+      {chart(points, label, formatBitRate, 1000)}
+    </Stat>
+  );
   return (
-    <div class="grid grid-4">
-      {s.cpu_pct !== null || props.hasCpu ? (
-        <Stat label="CPU" value={s.cpu_pct !== null ? pct(s.cpu_pct) : "–"} hint={loadHint} href={day?.href}>
-          {trend(day?.history.cpu, "CPU-Auslastung", pct, 100)}
-        </Stat>
-      ) : load?.value != null && (
-        <Stat label="Last je Kern" value={perCore(load.value)} tone={VALUE_TONE[load.severity]} hint="CPU-Auslastung kommt mit dem neuen Agent" href={day?.href}>
-          {trend(day?.history.load, "Last je Kern", perCore, 1, load.severity)}
+    <div class="grid server-kpis">
+      <Stat label="CPU" value={s.rates.cpu !== null ? pct(s.rates.cpu) : "–"} href={day?.href}
+        hint={!hasCpu ? "Der Agent meldet noch keine CPU-Zeit" : s.rates.iowait !== null ? `I/O-Wait ${pct(s.rates.iowait)}` : undefined}>
+        {hasCpu && chart(h?.cpu, "CPU-Auslastung", pct, 100)}
+      </Stat>
+      {load?.value != null && (
+        <Stat label="Last je Kern" value={perCore(load.value)} tone={VALUE_TONE[load.severity]} href={day?.href}
+          hint={s.load ? `Load ${perCore(s.load.load1)} / ${perCore(s.load.load5)} / ${perCore(s.load.load15)}` : undefined}>
+          {chart(h?.load, "Last je Kern", perCore, 1, load.severity)}
         </Stat>
       )}
       {memory?.value != null && (
         <Stat label="Arbeitsspeicher" value={pct(memory.value)} tone={VALUE_TONE[memory.severity]} href={day?.href}
           hint={s.memory ? `${formatKb(s.memory.available_kb)} verfügbar von ${formatKb(s.memory.total_kb)}` : undefined}>
-          {trend(day?.history.memory, "Arbeitsspeicher", pct, 100, memory.severity)}
+          {chart(h?.memory, "Arbeitsspeicher", pct, 100, memory.severity)}
+        </Stat>
+      )}
+      {s.swap && s.swap.total_kb > 0 && (
+        <Stat label="Swap" value={pct(swapPct(s.swap))} href={day?.href} hint={`${formatKb(s.swap.total_kb - s.swap.free_kb)} belegt von ${formatKb(s.swap.total_kb)}`}>
+          {chart(h?.swap, "Swap", pct, 100)}
         </Stat>
       )}
       {disks.map((k) => {
@@ -374,10 +420,12 @@ function ServerTiles(props: { s: ServerStatus; hasCpu: boolean; day?: { history:
         return (
           <Stat label={`Festplatte ${mount}`} value={pct(k.value!)} tone={VALUE_TONE[k.severity]} href={day?.href}
             hint={d ? `${formatKb(d.avail_kb)} frei von ${formatKb(d.size_kb)}` : undefined}>
-            {trend(day?.history.disks.find((x) => x.mount === mount)?.points, `Festplatte ${mount}`, pct, 100, k.severity)}
+            {chart(h?.disks.find((x) => x.mount === mount)?.points, `Festplatte ${mount}`, pct, 100, k.severity)}
           </Stat>
         );
       })}
+      {hasNet && net("Netzwerk eingehend", s.rates.netIn, h?.netIn)}
+      {hasNet && net("Netzwerk ausgehend", s.rates.netOut, h?.netOut)}
     </div>
   );
 }
@@ -396,7 +444,12 @@ function ServerSection(props: { envId: number; s: ServerStatus; history: ServerH
         </ul>
       )}
       {s.last_error && <p class="small status-bad">{s.last_error}</p>}
-      {s.checks.length > 0 && <ServerTiles s={s} hasCpu={props.history.hasCpu} day={{ history: props.history, bucketMs: props.bucketMs, href }} />}
+      {s.checks.length > 0 && (
+        <>
+          <ServerFacts s={s} />
+          <ServerTiles s={s} hasCpu={props.history.hasCpu} day={{ history: props.history, bucketMs: props.bucketMs, href }} />
+        </>
+      )}
     </section>
   );
 }
@@ -417,7 +470,12 @@ function ServerPage(props: { c: Context; env: EnvContext; s: ServerStatus; range
         <p class="small"><a href={`/env/${env.id}/servers`}>← Alle Server</a></p>
         <ServerHead s={s} />
         {s.last_error && <p class="small status-bad">{s.last_error}</p>}
-        {s.checks.length > 0 && <ServerTiles s={s} hasCpu={history.hasCpu} />}
+        {s.checks.length > 0 && (
+          <>
+            <ServerFacts s={s} />
+            <ServerTiles s={s} hasCpu={history.hasCpu} />
+          </>
+        )}
         <Card title="Prüfungen" flush>
           {s.checks.length === 0 ? (
             <Empty title="Noch keine Werte" icon="server">Der Runner hat diesen Server noch nicht gelesen.</Empty>
@@ -442,9 +500,13 @@ function ServerPage(props: { c: Context; env: EnvContext; s: ServerStatus; range
         {history.hasCpu
           ? chart("CPU-Auslastung", history.cpu, pct, 100)
           : <Card title="CPU-Auslastung"><p class="muted small">Der Agent auf diesem Server meldet noch keine CPU-Zeit, nur die Last. Mit dem aktuellen Agent erscheint hier die Auslastung.</p></Card>}
+        {history.hasCpu && chart("I/O-Wait", history.iowait, pct, 10)}
         {chart("Last je Kern", history.load, perCore, 1)}
         {chart("Arbeitsspeicher", history.memory, pct, 100)}
+        {history.hasSwap && chart("Swap", history.swap, pct, 100)}
         {history.disks.map((d) => chart(`Festplatte ${d.mount}`, d.points, pct, 100))}
+        {history.hasNet && chart("Netzwerk eingehend", history.netIn, formatBitRate, 1000)}
+        {history.hasNet && chart("Netzwerk ausgehend", history.netOut, formatBitRate, 1000)}
       </div>
     </EnvShell>
   );
@@ -483,7 +545,7 @@ export function mountRunners(app: Hono) {
             ) : (
               <>
                 {servers.map((x) => <ServerSection envId={env.id} {...x} />)}
-                <p class="muted small">Per SSH von einem Runner gelesen. CPU ist die mittlere Auslastung zwischen zwei Lesungen, die Linien zeigen die letzten 24 Stunden.</p>
+                <p class="muted small">Per SSH von einem Runner gelesen. CPU, I/O-Wait und Netzwerk sind Mittelwerte zwischen zwei Lesungen, die Diagramme zeigen die letzten 24 Stunden.</p>
               </>
             )}
           </div>

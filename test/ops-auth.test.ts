@@ -61,6 +61,12 @@ describe("role enforcement on routes", () => {
     expect(await agent.text()).toStartWith("#!/bin/sh");
   });
 
+  test("an htmx request without a session sends the whole page to the login instead of swapping it into a fragment", async () => {
+    const poll = await h.request("/hosts", { headers: { "hx-request": "true", "hx-current-url": "http://localhost/hosts?state=bad" } });
+    expect(poll.status).toBe(204);
+    expect(poll.headers.get("hx-redirect")).toBe("/login?next=%2Fhosts%3Fstate%3Dbad");
+  });
+
   test("viewer reads but cannot run, manage hosts or see users", async () => {
     const v = h.users.viewer.cookie;
     for (const path of ["/", "/hosts", "/templates", "/runs", "/schedules", "/events", "/account"]) {

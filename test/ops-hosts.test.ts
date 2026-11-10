@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { cpuUsagePct, DEFAULT_THRESHOLDS, effectiveThresholds, evaluateReport, parseThresholds } from "../src/shared/hosts/evaluate";
+import { bitRate, cpuIowaitPct, cpuUsagePct, DEFAULT_THRESHOLDS, effectiveThresholds, evaluateReport, formatBitRate, parseThresholds } from "../src/shared/hosts/evaluate";
 import type { HostRow } from "../src/ops/hosts/monitor";
 import { parseReport, type HostReport } from "../src/shared/hosts/report";
 import { createOpsHarness, outboxRows, writeExecutable, type OpsHarness } from "./helpers/ops";
@@ -51,6 +51,40 @@ describe("report validation", () => {
       null,
     ];
     for (const b of bad) expect(parseReport(b).ok).toBe(false);
+  });
+});
+
+describe("swap, network counters and uptime", () => {
+  test("optional like the CPU counters, and checked like the rest", () => {
+    const extra = { swap: { total_kb: 1000, free_kb: 400 }, net: { rx_bytes: 81920000, tx_bytes: 20480000 }, uptime: 350735 };
+    const parsed = parseReport(report(extra));
+    expect(parsed.ok && { swap: parsed.report.swap, net: parsed.report.net, uptime: parsed.report.uptime }).toEqual(extra);
+    const without = parseReport(report());
+    expect(without.ok && [without.report.swap, without.report.net, without.report.uptime]).toEqual([null, null, null]);
+    expect(parseReport(report({ swap: null, net: null, uptime: null })).ok).toBe(true);
+    for (const bad of [
+      { swap: { total_kb: 100, free_kb: 101 } },
+      { swap: { total_kb: 100 } },
+      { net: { rx_bytes: -1, tx_bytes: 0 } },
+      { net: { rx_bytes: 1, tx_bytes: 1, lo: 5 } },
+      { uptime: 1.5 },
+      { uptime: "1 day" },
+    ]) {
+      expect(parseReport(report(bad as any)).ok).toBe(false);
+    }
+  });
+
+  test("I/O wait and bit rates between two readings; counters going backwards give none", () => {
+    const a = { total: 1000, idle: 800, iowait: 100 };
+    expect(cpuIowaitPct(a, { total: 2000, idle: 1550, iowait: 150 })).toBeCloseTo(5);
+    expect(cpuIowaitPct(a, { total: 2000, idle: 1700, iowait: 90 })).toBeNull();
+    expect(cpuIowaitPct(a, a)).toBeNull();
+    expect(cpuIowaitPct(null, a)).toBeNull();
+    expect(bitRate(1000, 76000, 300)).toBe(2000);
+    expect(bitRate(76000, 1000, 300)).toBeNull();
+    expect(bitRate(null, 1000, 300)).toBeNull();
+    expect(bitRate(1000, 2000, 0)).toBeNull();
+    expect([850, 2000, 1_234_567, 2_000_000, 2_500_000, 940_000_000, 1e9].map(formatBitRate)).toEqual(["850 bit/s", "2 kbit/s", "1,2 Mbit/s", "2 Mbit/s", "2,5 Mbit/s", "940 Mbit/s", "1 Gbit/s"]);
   });
 });
 

@@ -75,6 +75,18 @@ export function formatKb(kb: number): string {
   return `${v >= 100 || i === 0 ? Math.round(v) : num1(v)} ${units[i]}`;
 }
 
+/** Bits per second in decimal units, as network links are rated: "850 bit/s", "1,2 Mbit/s". */
+export function formatBitRate(bps: number): string {
+  const units = ["bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s"];
+  let v = bps;
+  let i = 0;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${v >= 100 || i === 0 || Number.isInteger(v) ? Math.round(v) : num1(v)} ${units[i]}`;
+}
+
 function level(value: number, warn: number, crit: number): CheckSeverity {
   return value >= crit ? "critical" : value >= warn ? "warning" : "ok";
 }
@@ -162,6 +174,24 @@ export function cpuUsagePct(prev: HostReport["cpu"] | undefined, cur: HostReport
   const idle = cur.idle + cur.iowait - prev.idle - prev.iowait;
   if (total <= 0 || idle < 0 || idle > total) return null;
   return ((total - idle) * 100) / total;
+}
+
+/**
+ * Share of CPU time spent waiting for I/O between two reports, in percent. Separate from
+ * cpuUsagePct because the kernel's iowait counter may go backwards (proc(5)): then only this is null.
+ */
+export function cpuIowaitPct(prev: HostReport["cpu"] | undefined, cur: HostReport["cpu"] | undefined): number | null {
+  if (!prev || !cur) return null;
+  const total = cur.total - prev.total;
+  const iowait = cur.iowait - prev.iowait;
+  if (total <= 0 || iowait < 0 || iowait > total) return null;
+  return (iowait * 100) / total;
+}
+
+/** Bits per second between two readings of a byte counter; null without both or across a reboot (the counter restarts). */
+export function bitRate(prev: number | null | undefined, cur: number | null | undefined, seconds: number): number | null {
+  if (prev == null || cur == null || !(seconds > 0) || cur < prev) return null;
+  return ((cur - prev) * 8) / seconds;
 }
 
 export function worstOf(results: { severity: CheckSeverity }[]): CheckSeverity {

@@ -1,8 +1,5 @@
 # Vantage
 
-<img width="780" height="547" alt="image" src="https://github.com/user-attachments/assets/2c389985-2340-43d3-9029-589f619eefe7" />
-
-
 Systaro's observability and operations suite. Customers and Systaro staff log in and see uptime,
 test runs, incidents, errors, logs, APM, server health and security findings for the environments
 they were granted. Admins get notified when something breaks. Internally, the ops service runs

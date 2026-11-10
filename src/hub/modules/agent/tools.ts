@@ -11,9 +11,11 @@ import { serverHistory } from "../runners/metrics";
 import { SERVER_PRESETS, serverStale, serverStatuses } from "../runners/routes";
 import { loadEnv, type EnvContext } from "../../ui";
 import { selectRules } from "../errors/rules";
+import { STATUS_LABEL } from "../isms/judge";
+import { countByStatus, loadIsms } from "../isms/load";
 import { EsError, logsEs } from "../es/client";
-import { bucketFor, parseRange } from "../es/range";
-import { buildLogEntryLookup, buildLogsSearch, LOG_LEVELS, parseLogFilters, parseLogId, sourceOf, toLogEntry, toLogRow } from "../logs/query";
+import { bucketFor, fixedInterval, parseRange } from "../es/range";
+import { buildLogCounts, buildLogEntryLookup, buildLogsSearch, LOG_GROUPS, LOG_LEVELS, parseLogFilters, parseLogGroup, parseLogId, sourceOf, toLogCounts, toLogEntry, toLogRow } from "../logs/query";
 import { alertsStale, mappedWazuhAgents, openCounts, securityAgents, securityProjects } from "../security/routes";
 import { agentAlerts } from "../security/wazuh";
 import type { NamedLogsSource } from "../sources/config";
@@ -46,6 +48,12 @@ export interface Tool {
 
 const LEVEL_NAME = ["none", "overview", "diagnostics", "security"] as const;
 const ENV_ID = { environment_id: { type: "integer", description: "Id from list_environments" } };
+const LOG_VIEW = {
+  source: { type: "string", description: "Name of one log source (see sources in the result); default all" },
+  query: { type: "string" },
+  levels: { type: "array", items: { type: "string", enum: [...LOG_LEVELS] } },
+  range: { type: "string", enum: ["15m", "1h", "24h", "7d"], description: "Default 1h" },
+};
 
 function int(v: unknown, name: string): number {
   const n = typeof v === "string" ? Number(v) : v;
@@ -77,6 +85,18 @@ async function env(c: Context, args: Args, level: 1 | 2 | 3, what: string): Prom
   return e;
 }
 
+/** What search_logs and count_logs share: the sources, the time range, level and text a call asks for. */
+async function logView(c: Context, envId: number, args: Args) {
+  const sources = await logSources(c, envId);
+  const read = typeof args.source === "string" && args.source ? [namedSource(sources, args.source)] : sources;
+  const { range } = parseRange((k) => (k === "range" && typeof args.range === "string" ? args.range : undefined), { fallback: "1h" });
+  const levels = Array.isArray(args.levels) ? args.levels.map(String) : typeof args.levels === "string" ? [args.levels] : [];
+  const filters = parseLogFilters(levels, typeof args.query === "string" ? args.query : undefined);
+  return { sources, read, range, filters };
+}
+
+const isoRange = (range: { from: number; to: number }) => ({ from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString() });
+
 export const TOOLS: Tool[] = [
   {
     name: "list_environments",
@@ -84,7 +104,7 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     run: (c) =>
       rls(c, (tx) => all<any>(tx`
-        select e.id, o.name as organisation, p.name as project, e.name as environment, e.kind, e.url,
+        select e.id, o.name as organisation, p.id as project_id, p.name as project, e.name as environment, e.kind, e.url,
                vantage_level(vantage_uid(), e.id) as level,
                (select count(*)::int from monitor_state s where s.environment_id = e.id and s.status = 'down') as monitors_down,
                (select count(*)::int from monitor_state s where s.environment_id = e.id) as monitors,
@@ -94,7 +114,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "get_environment_status",
-    description: "Current state of one environment: every monitor with status and uptime (health-page monitors also with the components and metrics of their latest reading; via_runner when a runner inside the customer network probes it), open incidents, the latest test run per suite; with diagnostics access also open error groups and the servers a runner reads (disk, memory, load, systemd, docker checks with severity; stale when no report for three intervals), with security access the open vulnerabilities by severity.",
+    description: "Current state of one environment: every monitor with status and uptime (health-page monitors also with the components and metrics of their latest reading; via_runner when a runner inside the customer network probes it), open incidents, the latest test run per suite; with diagnostics access also open error groups and the servers a runner reads (disk, memory, load, systemd, docker checks with severity; current CPU usage, I/O wait, swap use, network traffic in bit/s, cores and boot time; stale when no report for three intervals), with security access the open vulnerabilities by severity.",
     inputSchema: { type: "object", properties: ENV_ID, required: ["environment_id"], additionalProperties: false },
     run: async (c, args) => {
       const e = await env(c, args, 1, "this environment");
@@ -121,7 +141,9 @@ export const TOOLS: Tool[] = [
           : undefined,
         servers: e.level >= 2
           ? (await serverStatuses(tx, e.id)).map((s) => ({
-              name: s.name, enabled: s.enabled, last_report_at: s.last_report_at, stale: s.enabled && serverStale(s), last_error: s.last_error, cpu_pct: round(s.cpu_pct, 1),
+              name: s.name, enabled: s.enabled, last_report_at: s.last_report_at, stale: s.enabled && serverStale(s), last_error: s.last_error,
+              cpu_pct: round(s.rates.cpu, 1), iowait_pct: round(s.rates.iowait, 1), net_in_bps: round(s.rates.netIn, 0), net_out_bps: round(s.rates.netOut, 0),
+              swap_pct: s.swap?.total_kb ? round(((s.swap.total_kb - s.swap.free_kb) * 100) / s.swap.total_kb, 1) : null, cores: s.load?.cores ?? null, booted_at: s.booted_at,
               checks: s.checks.map((k) => ({ check: k.key, label: k.label, severity: k.severity, value: k.value, detail: k.detail, since: k.since })),
             }))
           : undefined,
@@ -131,7 +153,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "get_server_history",
-    description: "One server's readings over time, as its page in Vantage shows them (needs diagnostics access): CPU usage in percent (null while the server's agent sends no CPU time, see has_cpu), load per core, memory and each filesystem in percent, averaged per bucket (filesystems: the highest value). server is a name from get_environment_status.",
+    description: "One server's readings over time, as its page in Vantage shows them (needs diagnostics access): CPU usage and I/O wait in percent (null while the server's agent sends no CPU time, see has_cpu), load per core, memory, swap and each filesystem in percent, network traffic in and out in bit/s (null while the agent sends no network counters, see has_net), averaged per bucket (filesystems: the highest value). server is a name from get_environment_status.",
     inputSchema: {
       type: "object",
       properties: { ...ENV_ID, server: { type: "string" }, range: { type: "string", enum: ["24h", "7d", "30d"], description: "Default 24h" } },
@@ -153,12 +175,17 @@ export const TOOLS: Tool[] = [
           range: { from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString() },
           bucket_minutes: bucketMs / 60_000,
           has_cpu: h.hasCpu,
+          has_net: h.hasNet,
           points: h.memory.map((m, i) => ({
             at: new Date(m.t).toISOString(),
             cpu_pct: round(h.cpu[i]?.v, 1),
+            iowait_pct: round(h.iowait[i]?.v, 1),
             load_per_core: round(h.load[i]?.v, 2),
             memory_pct: round(m.v, 1),
+            swap_pct: round(h.swap[i]?.v, 1),
             disk_pct: Object.fromEntries(h.disks.map((d) => [d.mount, round(d.points[i]?.v, 1)])),
+            net_in_bps: round(h.netIn[i]?.v, 0),
+            net_out_bps: round(h.netOut[i]?.v, 0),
           })),
         };
       });
@@ -190,10 +217,7 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         ...ENV_ID,
-        source: { type: "string", description: "Name of one log source (see sources in the result); default all" },
-        query: { type: "string" },
-        levels: { type: "array", items: { type: "string", enum: [...LOG_LEVELS] } },
-        range: { type: "string", enum: ["15m", "1h", "24h", "7d"], description: "Default 1h" },
+        ...LOG_VIEW,
         limit: { type: "integer", maximum: 100, description: "Default 50" },
       },
       required: ["environment_id"],
@@ -201,15 +225,11 @@ export const TOOLS: Tool[] = [
     },
     run: async (c, args) => {
       const e = await env(c, args, 2, "logs (diagnostics)");
-      const sources = await logSources(c, e.id);
-      const read = typeof args.source === "string" && args.source ? [namedSource(sources, args.source)] : sources;
-      const { range } = parseRange((k) => (k === "range" && typeof args.range === "string" ? args.range : undefined), { fallback: "1h" });
-      const levels = Array.isArray(args.levels) ? args.levels.map(String) : typeof args.levels === "string" ? [args.levels] : [];
-      const filters = parseLogFilters(levels, typeof args.query === "string" ? args.query : undefined);
+      const { sources, read, range, filters } = await logView(c, e.id, args);
       const { index, body } = buildLogsSearch(read, { range, filters });
       const res = await fromEs(() => logsEs.search(index, { ...body, size: bounded(args.limit, 50, 100) }));
       return {
-        range: { from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString() },
+        range: isoRange(range),
         sources: sources.map((s) => s.name),
         total: res.hits.total,
         entries: res.hits.hits.map(toLogRow).map((r) => ({
@@ -222,6 +242,38 @@ export const TOOLS: Tool[] = [
           stack_trace: r.stack || undefined,
           trace_id: r.traceId || undefined,
         })),
+      };
+    },
+  },
+  {
+    name: "count_logs",
+    description: "How many log entries match and how they spread over time (needs diagnostics access). Takes the filters of search_logs but counts every entry in the range, while search_logs returns at most 100, so use it for 'how many', 'how often' and 'since when'. total is exact. over_time holds the count per interval. group_by splits the count into its largest groups, and other is what lies beyond them; with many distinct values the group counts can be slightly off.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...ENV_ID,
+        ...LOG_VIEW,
+        group_by: { type: "string", enum: [...LOG_GROUPS], description: "Split the count by level, logger, host or log source" },
+        limit: { type: "integer", maximum: 50, description: "Groups to return, default 10" },
+      },
+      required: ["environment_id"],
+      additionalProperties: false,
+    },
+    run: async (c, args) => {
+      const e = await env(c, args, 2, "logs (diagnostics)");
+      const { sources, read, range, filters } = await logView(c, e.id, args);
+      const groupBy = parseLogGroup(args.group_by);
+      if (args.group_by && !groupBy) throw new ToolError(`group_by must be one of ${LOG_GROUPS.join(", ")}.`);
+      const intervalMs = bucketFor(range);
+      const { index, body } = buildLogCounts(read, { range, filters, intervalMs, groupBy, groups: bounded(args.limit, 10, 50) });
+      const counts = toLogCounts(await fromEs(() => logsEs.search(index, body)), read, groupBy);
+      return {
+        range: isoRange(range),
+        sources: sources.map((s) => s.name),
+        total: counts.total,
+        interval: fixedInterval(intervalMs),
+        over_time: counts.overTime.map((p) => ({ at: new Date(p.t).toISOString(), count: p.v })),
+        ...(groupBy ? { group_by: groupBy, groups: counts.groups, other: counts.other } : {}),
       };
     },
   },
@@ -375,6 +427,31 @@ export const TOOLS: Tool[] = [
         select r.id, s.name as suite, r.status, r.received_at, r.duration_ms, r.total, r.passed, r.failed, r.flaky, r.skipped, r.branch, r.commit_sha, r.pipeline_url
         from test_runs r join test_suites s on s.id = r.suite_id where r.environment_id = ${e.id}
         order by r.received_at desc limit ${bounded(args.limit, 20, 100)}`));
+    },
+  },
+  {
+    name: "get_isms_status",
+    description: "The ISMS controls of a project, as its ISMS tab shows them: each control's reference, title and basis, how it is checked (uptime, tls, servers, logs, vulns for open vulnerabilities against a fixing deadline, maintenance for Ansible runs from Semaphore, all from Vantage's own data; record for evidence a person enters), its status (ok, warn, deviation, due, open, unknown) with the measured value, and the latest record. A check on servers or logs reads 'unknown' without diagnostics access to its environment, one on vulns or maintenance without security access. With environment_id only the controls checking that environment, as its ISMS tab shows them.",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "integer", description: "project_id from list_environments" }, environment_id: { type: "integer", description: "optional: only controls that check this environment" } },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    run: async (c, args) => {
+      const view = await loadIsms(c, int(args.project_id, "project_id"), args.environment_id === undefined ? null : int(args.environment_id, "environment_id"));
+      if (!view) throw new ToolError("Project not found, or none of its environments is granted to you.");
+      return {
+        project: { id: view.project.id, name: view.project.name, organisation: view.project.org_name },
+        checked_at: view.checkedAt,
+        summary: countByStatus(view.controls),
+        controls: view.controls.map((k) => ({
+          id: k.id, ref: k.ref, title: k.title, basis: k.basis, note: k.note, kind: k.kind,
+          environment_id: k.environment_id, environment: k.env_name, params: k.params,
+          status: k.verdict.status, status_label: STATUS_LABEL[k.verdict.status], value: k.verdict.value, detail: k.verdict.detail ?? null,
+          last_record: k.last, records: k.records,
+        })),
+      };
     },
   },
 ];

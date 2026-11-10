@@ -105,6 +105,23 @@ export function hostSummaries(tx: any, hosts: string[]): Promise<HostSummary[]> 
     order by x.host`);
 }
 
+/**
+ * Per server, its newest run and whether that run failed there; with `template`, only runs whose
+ * template name contains it (case-insensitive). Runs inside rls().
+ */
+export function lastRunPerHost(tx: any, hosts: string[], template: string | null): Promise<{ host: string; last_at: Date | null; last_failed: boolean | null }[]> {
+  return all(tx`
+    select x.host, last.created_at as last_at, last.failed as last_failed
+    from unnest(${tx.array(hosts, "text")}::text[]) as x(host)
+    left join lateral (
+      select r.created_at, (h.failed > 0 or h.unreachable > 0) as failed
+      from ansible_run_hosts h join ansible_runs r on r.id = h.run_id
+      where h.host = x.host and (${template}::text is null or strpos(lower(r.template_name), lower(${template}::text)) > 0)
+      order by r.created_at desc, r.id desc limit 1
+    ) last on true
+    order by x.host`);
+}
+
 function RunStatus(props: { run: RunRow; scoped: boolean }) {
   const { run } = props;
   if (run.status === "stopped" || run.status === "rejected") return <Badge tone="idle">abgebrochen</Badge>;

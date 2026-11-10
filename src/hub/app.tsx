@@ -30,6 +30,7 @@ import { mountAgentApi } from "./modules/agent/routes";
 import { mountRunnerApi } from "./modules/runners/api";
 import { mountRunners } from "./modules/runners/routes";
 import { mountIntegrations } from "./modules/integrations/routes";
+import { mountIsms } from "./modules/isms/routes";
 import { mountCortexLogin } from "./modules/cortex/routes";
 
 export function createHubApp() {
@@ -90,6 +91,7 @@ export function createHubApp() {
 
   mountOverview(app);
   mountProject(app);
+  mountIsms(app);
   mountAccount(app);
   mountRegistry(app);
   mountUsers(app);

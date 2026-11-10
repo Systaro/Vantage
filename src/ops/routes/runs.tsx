@@ -90,7 +90,7 @@ export function mountRuns(app: Hono, ops: Ops) {
           <Card
             title={<h2 class="row"><Icon name="terminal" />Log{live && <span id="log-live" class="ops-live" title="Die Ausgabe erscheint, während der Lauf arbeitet."><span class="live-dot" />live</span>}</h2>}
             description={truncated ? "Gezeigt wird das letzte MB; das ganze Log gibt es als Download." : undefined}
-            actions={!run.log_deleted_at && <a class="btn small" href={`/runs/${run.id}/log`}><Icon name="download" size="sm" />Herunterladen</a>}
+            actions={!run.log_deleted_at && <a class="btn small" href={`/runs/${run.id}/log`} download><Icon name="download" size="sm" />Herunterladen</a>}
             flush
           >
             {run.log_deleted_at ? (

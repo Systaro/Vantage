@@ -1,8 +1,8 @@
 #!/bin/sh
 # vantage-agent: host check agent of Vantage Ops.
 #
-# Collects disk, memory, load, CPU time, systemd, docker and (optionally) Elasticsearch state of this
-# host and emits it as one JSON report. The server validates the report strictly; the contract is
+# Collects disk, memory, swap, load, CPU time, network traffic, uptime, systemd, docker and
+# (optionally) Elasticsearch state of this host and emits it as one JSON report. The server validates the report strictly; the contract is
 # src/shared/hosts/report.ts in the Vantage repository (report version 1).
 #
 # Modes:
@@ -34,8 +34,9 @@ PATH=${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 AGENT_VERSION=1
-# Test hooks, not part of the interface: alternative proc root and systemd runtime directory.
+# Test hooks, not part of the interface: alternative proc and sys roots and systemd runtime directory.
 PROC=${VANTAGE_PROC:-/proc}
+SYS=${VANTAGE_SYS:-/sys}
 SYSTEMD_DIR=${VANTAGE_SYSTEMD_DIR:-/run/systemd/system}
 
 NL='
@@ -331,6 +332,21 @@ collect_memory() {
   MEMORY_JSON=$_m
 }
 
+collect_swap() {
+  SWAP_JSON=null
+  [ -r "$PROC/meminfo" ] || return 0
+  # No swap configured is total 0, not null; null means the kernel did not say.
+  SWAP_JSON=$(awk '
+    $1 == "SwapTotal:" { t = $2 }
+    $1 == "SwapFree:" { f = $2 }
+    END {
+      if (t !~ /^[0-9]+$/ || f !~ /^[0-9]+$/) { print "null"; exit }
+      if (f + 0 > t + 0) f = t
+      printf "{\"total_kb\":%s,\"free_kb\":%s}", t, f
+    }' "$PROC/meminfo")
+  [ -n "$SWAP_JSON" ] || SWAP_JSON=null
+}
+
 cpu_cores() {
   _n=''
   if have nproc; then _n=$(nproc 2>/dev/null); fi
@@ -382,6 +398,50 @@ collect_cpu() {
     return 0
   fi
   CPU_JSON=$_c
+}
+
+# Bytes received and sent since boot, summed over the interfaces that are not virtual: loopback,
+# docker0, veth, bridges, VLANs and tunnels carry traffic a physical interface carries too, or that
+# never leaves the host. Like CPU time, the hub turns two readings into a rate.
+collect_net() {
+  NET_JSON=null
+  [ -r "$PROC/net/dev" ] || return 0
+  # The echo keeps the name list non-empty, so FNR == NR never spills over into the second file.
+  _n=$( (
+    ls "$SYS/devices/virtual/net" 2>/dev/null
+    echo
+  ) | awk '
+    FNR == NR { if ($0 != "") virt[$0] = 1; next }
+    FNR > 2 {
+      i = index($0, ":")
+      if (!i) next
+      name = substr($0, 1, i - 1)
+      gsub(/[ \t]/, "", name)
+      if (name == "lo" || name in virt) next
+      if (split(substr($0, i + 1), f, " ") < 9 || f[1] !~ /^[0-9]+$/ || f[9] !~ /^[0-9]+$/) { bad = 1; next }
+      rx += f[1]
+      tx += f[9]
+      seen = 1
+    }
+    END {
+      if (!seen) exit (bad ? 1 : 0)
+      printf "{\"rx_bytes\":%.0f,\"tx_bytes\":%.0f}", rx, tx
+    }' - "$PROC/net/dev") || {
+    add_error "net: cannot parse $PROC/net/dev"
+    return 0
+  }
+  [ -z "$_n" ] || NET_JSON=$_n
+}
+
+collect_uptime() {
+  UPTIME_JSON=null
+  [ -r "$PROC/uptime" ] || return 0
+  _u=$(awk 'NR == 1 && $1 ~ /^[0-9]+(\.[0-9]+)?$/ { printf "%d", $1 }' "$PROC/uptime")
+  if [ -z "$_u" ]; then
+    add_error "uptime: cannot parse $PROC/uptime"
+    return 0
+  fi
+  UPTIME_JSON=$_u
 }
 
 collect_systemd() {
@@ -478,7 +538,8 @@ collect_es() {
 
 assemble_report() {
   REPORT="{\"version\":1,\"agent\":\"$AGENT_VERSION\",\"hostname\":$HOST_JSON,\"time\":$NOW"
-  REPORT="$REPORT,\"disks\":$DISKS_JSON,\"memory\":$MEMORY_JSON,\"load\":$LOAD_JSON,\"cpu\":$CPU_JSON"
+  REPORT="$REPORT,\"disks\":$DISKS_JSON,\"memory\":$MEMORY_JSON,\"swap\":$SWAP_JSON,\"load\":$LOAD_JSON,\"cpu\":$CPU_JSON"
+  REPORT="$REPORT,\"net\":$NET_JSON,\"uptime\":$UPTIME_JSON"
   REPORT="$REPORT,\"systemd\":$SYSTEMD_JSON,\"docker\":$DOCKER_JSON,\"es\":$ES_JSON"
   REPORT="$REPORT,\"errors\":$(printf '%s' "$ERRORS" | json_lines 50 500)}"
 }
@@ -490,8 +551,11 @@ build_report() {
   make_tmp || add_error "agent: cannot create a temporary directory"
   collect_disks
   collect_memory
+  collect_swap
   collect_load
   collect_cpu
+  collect_net
+  collect_uptime
   collect_systemd
   collect_docker
   collect_es

@@ -440,5 +440,55 @@
   document.addEventListener("scroll", placeOpenSuggest, true);
   document.addEventListener("animationend", placeOpenSuggest, true);
 
+  // The next page comes from the server, which can take a moment: a tab or sidebar link turns active on
+  // the click, and the bar in vantage.css runs until the page arrives. Back from the cache undoes both.
+  var undoNavigation = null;
+
+  function showNavigation(link) {
+    root.classList.add("navigating");
+    // A second click while the first page is still on its way starts again from what the server rendered.
+    if (undoNavigation) undoNavigation();
+    undoNavigation = null;
+    var item = link && link.closest(".tabs a, .sb-link");
+    var group = item && item.closest(".tabs, .sidebar");
+    if (!group || item.classList.contains("active")) return;
+    var previous = Array.prototype.filter.call(group.querySelectorAll(item.matches(".sb-link") ? ".sb-link" : "a"), function (a) {
+      return a.classList.contains("active");
+    });
+    function mark(a, on) {
+      a.classList.toggle("active", on);
+      if (on) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    }
+    previous.forEach(function (a) { mark(a, false); });
+    mark(item, true);
+    undoNavigation = function () {
+      mark(item, false);
+      previous.forEach(function (a) { mark(a, true); });
+    };
+  }
+
+  // Registered after the click handler above, so a click it took over (a dialog opener) is already marked.
+  document.addEventListener("click", function (event) {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    var link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+    if (!link || link.target || link.hasAttribute("download") || link.origin !== location.origin) return;
+    if (link.hash && link.pathname === location.pathname && link.search === location.search) return;
+    showNavigation(link);
+  });
+
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    var method = ((event.submitter && event.submitter.getAttribute("formmethod")) || form.method).toLowerCase();
+    if (!event.defaultPrevented && !form.target && method !== "dialog") showNavigation(null);
+  });
+
+  window.addEventListener("pageshow", function (event) {
+    if (!event.persisted) return;
+    root.classList.remove("navigating");
+    if (undoNavigation) undoNavigation();
+    undoNavigation = null;
+  });
+
   markTheme();
 })();
