@@ -1,0 +1,15 @@
+#!/bin/sh
+# Fake "df -P -k MOUNT" for test/ops-agent.test.ts. Numbers come from $FAKE_DF_TABLE, one line per
+# mount: "mount|size|used|avail". Unknown mounts fail like a real df on a broken mount.
+for last; do :; done
+# ENVIRON instead of -v: -v would interpret backslashes in the mount path.
+line=$(DF_MOUNT=${last:-} awk -F'|' '$1 == ENVIRON["DF_MOUNT"] { print; exit }' "${FAKE_DF_TABLE:?}")
+if [ -z "$line" ]; then
+  echo "df: ${last:-}: Stale file handle" >&2
+  exit 1
+fi
+size=$(printf '%s\n' "$line" | cut -d'|' -f2)
+used=$(printf '%s\n' "$line" | cut -d'|' -f3)
+avail=$(printf '%s\n' "$line" | cut -d'|' -f4)
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/fake $size $used $avail 0% $last"

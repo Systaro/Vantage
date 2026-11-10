@@ -1,0 +1,26 @@
+#!/bin/sh
+# Fake docker for test/ops-agent.test.ts. FAKE_DOCKER=denied simulates a user without socket access.
+# Containers: web (unless-stopped, exited) and worker (no, restarting) must be reported;
+# oneshot (no, exited) and db (always, running) must not.
+if [ "${FAKE_DOCKER:-}" = denied ]; then
+  echo "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock" >&2
+  exit 1
+fi
+case ${1:-} in
+  info) echo 27.3.1 ;;
+  ps) printf '%s\n' aaa111 bbb222 ccc333 ddd444 ;;
+  inspect)
+    case "$*" in
+      *'{{.Name}}|{{.HostConfig.RestartPolicy.Name}}|{{.State.Status}}'*' aaa111 bbb222 ccc333 ddd444') ;;
+      *)
+        echo "fake docker: unexpected inspect call: $*" >&2
+        exit 1
+        ;;
+    esac
+    printf '%s\n' '/web|unless-stopped|exited' '/worker|no|restarting' '/oneshot|no|exited' '/db|always|running'
+    ;;
+  *)
+    echo "fake docker: unexpected arguments: $*" >&2
+    exit 1
+    ;;
+esac

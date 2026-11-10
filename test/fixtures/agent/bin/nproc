@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake nproc for test/ops-agent.test.ts.
+echo 4

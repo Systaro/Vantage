@@ -1,0 +1,6 @@
+node_modules
+data
+_automatic_testing
+.env
+.git
+test

@@ -1,0 +1,26 @@
+# Local development only. Every port is bound to 127.0.0.1.
+name: vantage-dev
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: vantage_dev
+    ports: ["127.0.0.1:5460:5432"]
+    volumes:
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      - pg:/var/lib/postgresql/data
+  elasticsearch:
+    # Same major/minor as the production logs cluster; stands in for the APM cluster too.
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.28
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["127.0.0.1:5461:9200"]
+    volumes: [es:/usr/share/elasticsearch/data]
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:5462:1025", "127.0.0.1:5463:8025"]
+volumes:
+  pg: {}
+  es: {}

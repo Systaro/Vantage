@@ -1,0 +1,13 @@
+# gitleaks' default rules, minus the fixed, made-up secrets of the test suite.
+# scripts/sync-github.sh scans every public snapshot with this file.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "fixed secrets of the test suite"
+regexTarget = "secret"
+regexes = [
+  '''^integrations-test-secret-0123456789abcdef$''',
+  '''^test-(ops-)?secret-0123456789''',
+  '''^glptt-abcdef123456$''',
+]
